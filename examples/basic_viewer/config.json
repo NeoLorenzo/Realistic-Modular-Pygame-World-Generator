@@ -1,0 +1,25 @@
+{
+    "simulation": {
+        "seed": 42,
+        "chunk_size_cm": 4000,
+        "world_width_cm": 100000,
+        "world_height_cm": 100000
+    },
+    "display": {
+        "screen_width": 800,
+        "screen_height": 800,
+        "clock_tick_rate": 60
+    },
+    "camera": {
+        "pan_speed_pixels": 15,
+        "zoom_speed": 0.1,
+        "max_zoom": 1.0,
+        "min_zoom": 0.008
+    },
+    "world_generation_parameters": {
+        "seed": 42,
+        "noise_scale": 20000.0,
+        "noise_octaves": 5,
+        "terrain_amplitude": 1.6
+    }
+}
