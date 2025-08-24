@@ -6,6 +6,10 @@ import json
 import logging
 import logging.config
 import pygame
+import cProfile
+import pstats
+import io
+from datetime import datetime
 
 # To import from the parent directory (Modular_Pygame_World_Generator),
 # we add it to the Python path.
@@ -26,21 +30,30 @@ class Application:
         self.config = self._load_config()
         self._setup_pygame()
 
+        # --- Profiling Setup (Rule 11) ---
+        self.profiler = None
+        if self.config.get('profiling', {}).get('enabled', False):
+            self.profiler = cProfile.Profile()
+            self.logger.info("Profiling is ENABLED.")
+        else:
+            self.logger.info("Profiling is DISABLED.")
+
         # --- State ---
         self.view_modes = ["terrain", "temperature", "humidity"]
         self.current_view_mode_index = 0
         self.view_mode = self.view_modes[self.current_view_mode_index]
+        self.frame_count = 0
 
         # --- Dependency Injection (Rule 7, DIP) ---
-        # Create the core components, passing them the tools they need.
-        self.camera = Camera(self.config)
+        # The Generator is created first and becomes the authority on the world.
         self.world_generator = WorldGenerator(
-            config=self.config['world_generation_parameters'],
+            config=self.config.get('world_generation_parameters', {}),
             logger=self.logger
         )
+        # Other components are given the generator instance to query for info.
+        self.camera = Camera(self.config, self.world_generator)
         self.world_renderer = WorldRenderer(
             generator=self.world_generator,
-            config=self.config,
             logger=self.logger
         )
 
@@ -82,26 +95,51 @@ class Application:
     def _setup_pygame(self):
         """Initializes Pygame and the display window."""
         pygame.init()
-        self.screen_width = self.config['display']['screen_width']
-        self.screen_height = self.config['display']['screen_height']
-        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+        display_config = self.config['display']
+        self.screen_width = display_config['screen_width']
+        self.screen_height = display_config['screen_height']
+        
+        flags = 0
+        if display_config.get('fullscreen', False):
+            flags = pygame.FULLSCREEN
+            self.logger.info("Initializing display in Fullscreen mode.")
+            # In fullscreen, we ignore width/height and use the native resolution
+            self.screen = pygame.display.set_mode((0, 0), flags)
+            # Update screen dimensions to the actual resolution chosen
+            self.screen_width, self.screen_height = self.screen.get_size()
+            # This is important for the camera's aspect ratio calculations
+            self.config['display']['screen_width'] = self.screen_width
+            self.config['display']['screen_height'] = self.screen_height
+        else:
+            self.logger.info(f"Initializing display in Windowed mode ({self.screen_width}x{self.screen_height}).")
+            self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+
         pygame.display.set_caption("Realistic Modular World Generator")
         self.clock = pygame.time.Clock()
-        self.tick_rate = self.config['display']['clock_tick_rate']
+        self.tick_rate = display_config['clock_tick_rate']
         self.logger.info("Pygame initialized successfully.")
 
     def run(self):
         """The main application loop."""
         self.logger.info("Entering main loop.")
         try:
+            if self.profiler:
+                self.profiler.enable()
+
             while self.is_running:
                 self._handle_events()
                 self._update()
                 self._draw()
                 self.clock.tick(self.tick_rate)
+                self.frame_count += 1
+
         except Exception as e:
             self.logger.critical("An unhandled exception occurred!", exc_info=True)
         finally:
+            if self.profiler:
+                self.profiler.disable()
+                self._report_profiling_results()
+
             self.logger.info("Exiting application.")
             pygame.quit()
             sys.exit()
@@ -117,7 +155,10 @@ class Application:
                 elif event.y < 0:
                     self.camera.zoom_out()
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_v:
+                if event.key == pygame.K_ESCAPE:
+                    self.logger.info("Event: ESC key pressed. Exiting.")
+                    self.is_running = False
+                elif event.key == pygame.K_v:
                     self.current_view_mode_index = (self.current_view_mode_index + 1) % len(self.view_modes)
                     self.view_mode = self.view_modes[self.current_view_mode_index]
                     self.logger.info(f"Event: View switched to '{self.view_mode}'")
@@ -142,6 +183,38 @@ class Application:
         """Renders the scene."""
         self.world_renderer.draw(self.screen, self.camera, self.view_mode)
         pygame.display.flip()
+
+    def _report_profiling_results(self):
+        """Saves and logs profiling data according to Rule 11."""
+        if not self.profiler:
+            return
+
+        profiling_config = self.config['profiling']
+        output_dir = profiling_config['output_dir']
+        log_count = profiling_config['log_count']
+        # Get the seed from the generator, which is the source of truth (Rule 7)
+        seed = self.world_generator.seed
+        
+        # Ensure the output directory exists
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            self.logger.info(f"Created profiling output directory: {output_dir}")
+
+        # --- Save full profiling data to a file (Rule 11.1) ---
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        filename = f"{date_str}_seed-{seed}_frames-{self.frame_count}_main.prof"
+        filepath = os.path.join(output_dir, filename)
+        self.profiler.dump_stats(filepath)
+        self.logger.info(f"Full profiling data saved to {filepath}")
+
+        # --- Log a summary to the console (User Request) ---
+        s = io.StringIO()
+        # Sort by cumulative time spent in the function
+        ps = pstats.Stats(self.profiler, stream=s).sort_stats('cumulative')
+        ps.print_stats(log_count)
+        
+        self.logger.info(f"--- Top {log_count} Profiling Results ---\n{s.getvalue()}")
+
 
 if __name__ == '__main__':
     app = Application()

@@ -2,11 +2,17 @@
 
 import pygame
 
+# Import type hint to avoid circular dependency
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from world_generator.generator import WorldGenerator
+
 class Camera:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, generator: 'WorldGenerator'):
         self.config = config
-        self.world_width = config['simulation']['world_width_cm']
-        self.world_height = config['simulation']['world_height_cm']
+        # World dimensions are now queried directly from the generator (Rule 7)
+        self.world_width = generator.world_width_cm
+        self.world_height = generator.world_height_cm
         self.screen_width = config['display']['screen_width']
         self.screen_height = config['display']['screen_height']
         

@@ -71,3 +71,6 @@ COLOR_MAP_HUMIDITY = {
 
 # --- Rendering & Performance ---
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture
+CHUNK_SIZE_CM = 4000
+DEFAULT_WORLD_WIDTH_CHUNKS = 250
+DEFAULT_WORLD_HEIGHT_CHUNKS = 250

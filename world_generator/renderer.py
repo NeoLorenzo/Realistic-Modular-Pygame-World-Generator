@@ -38,17 +38,16 @@ class WorldRenderer:
     """
     Handles the visualization of the world data on a Pygame screen.
     """
-    def __init__(self, generator: 'WorldGenerator', config: dict, logger: logging.Logger):
+    def __init__(self, generator: 'WorldGenerator', logger: logging.Logger):
         """
         Initializes the renderer.
         """
         self.generator = generator
-        self.config = config
         self.logger = logger
         self.logger.info("WorldRenderer initializing...")
 
-        # Load rendering-specific settings
-        self.chunk_size = self.config['simulation']['chunk_size_cm']
+        # Load settings directly from the generator instance
+        self.chunk_size = self.generator.settings['chunk_size_cm']
         self.chunk_resolution = DEFAULTS.CHUNK_RESOLUTION
         
         # Load all level and color data
@@ -150,8 +149,9 @@ class WorldRenderer:
         """Draws the visible portion of the world to the screen."""
         screen.fill((10, 0, 20))
 
-        world_width_chunks = int(self.config['simulation']['world_width_cm'] // self.chunk_size)
-        world_height_chunks = int(self.config['simulation']['world_height_cm'] // self.chunk_size)
+        # World size is now queried from the generator's settings (Rule 7)
+        world_width_chunks = self.generator.settings['world_width_chunks']
+        world_height_chunks = self.generator.settings['world_height_chunks']
 
         top_left_wx, top_left_wy = camera.screen_to_world(0, 0)
         bottom_right_wx, bottom_right_wy = camera.screen_to_world(camera.screen_width, camera.screen_height)

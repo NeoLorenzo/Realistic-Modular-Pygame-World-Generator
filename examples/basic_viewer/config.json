@@ -1,11 +1,6 @@
 {
-    "simulation": {
-        "seed": 42,
-        "chunk_size_cm": 4000,
-        "world_width_cm": 100000,
-        "world_height_cm": 100000
-    },
     "display": {
+        "fullscreen": true,
         "screen_width": 800,
         "screen_height": 800,
         "clock_tick_rate": 60
@@ -16,10 +11,12 @@
         "max_zoom": 1.0,
         "min_zoom": 0.008
     },
+    "profiling": {
+        "enabled": true,
+        "log_count": 20,
+        "output_dir": "profiles"
+    },
     "world_generation_parameters": {
-        "seed": 42,
-        "noise_scale": 20000.0,
-        "noise_octaves": 5,
-        "terrain_amplitude": 1.6
+        "seed": 42
     }
 }
