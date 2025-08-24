@@ -140,6 +140,9 @@ class Application:
                 self.profiler.disable()
                 self._report_profiling_results()
 
+            # Cleanly shut down the renderer's worker thread before exiting
+            self.world_renderer.shutdown()
+
             self.logger.info("Exiting application.")
             pygame.quit()
             sys.exit()
