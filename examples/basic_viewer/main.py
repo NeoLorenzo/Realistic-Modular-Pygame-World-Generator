@@ -44,6 +44,19 @@ class Application:
         self.view_mode = self.view_modes[self.current_view_mode_index]
         self.frame_count = 0
 
+        # --- Performance Test State (Rule 11) ---
+        self.perf_test_config = self.config.get('performance_test', {})
+        self.is_perf_test_running = self.perf_test_config.get('enabled', False)
+        self._perf_test_path = []
+        self._perf_test_current_action = None
+        self._perf_test_action_frame_count = 0
+        if self.is_perf_test_running:
+            self.logger.info("Performance test mode is ENABLED. User input will be ignored.")
+            # Create a simple, expanded path for easier processing
+            for step in self.perf_test_config.get('path', []):
+                for _ in range(step['frames']):
+                    self._perf_test_path.append(step)
+
         # --- Dependency Injection (Rule 7, DIP) ---
         # The Generator is created first and becomes the authority on the world.
         self.world_generator = WorldGenerator(
@@ -133,6 +146,11 @@ class Application:
                 self.clock.tick(self.tick_rate)
                 self.frame_count += 1
 
+                # Performance test exit condition
+                if self.is_perf_test_running and self.frame_count >= self.perf_test_config.get('duration_frames', 1000):
+                    self.logger.info(f"Performance test complete after {self.frame_count} frames.")
+                    self.is_running = False
+
         except Exception as e:
             self.logger.critical("An unhandled exception occurred!", exc_info=True)
         finally:
@@ -152,35 +170,60 @@ class Application:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.is_running = False
-            elif event.type == pygame.MOUSEWHEEL:
+            # Allow manual exit via ESC key even during a performance test
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.logger.info("Event: ESC key pressed. Exiting.")
+                self.is_running = False
+
+            # --- Ignore user input during performance test (Rule 11) ---
+            if self.is_perf_test_running:
+                continue  # Skip to the next event
+
+            # --- Handle user-driven events only if test is not running ---
+            if event.type == pygame.MOUSEWHEEL:
                 if event.y > 0:
                     self.camera.zoom_in()
                 elif event.y < 0:
                     self.camera.zoom_out()
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    self.logger.info("Event: ESC key pressed. Exiting.")
-                    self.is_running = False
-                elif event.key == pygame.K_v:
+                if event.key == pygame.K_v:
                     self.current_view_mode_index = (self.current_view_mode_index + 1) % len(self.view_modes)
                     self.view_mode = self.view_modes[self.current_view_mode_index]
                     self.logger.info(f"Event: View switched to '{self.view_mode}'")
 
-        # Handle continuous key presses for panning
-        keys = pygame.key.get_pressed()
-        pan_speed = self.config['camera']['pan_speed_pixels']
-        if keys[pygame.K_w]:
-            self.camera.pan(0, -pan_speed)
-        if keys[pygame.K_s]:
-            self.camera.pan(0, pan_speed)
-        if keys[pygame.K_a]:
-            self.camera.pan(-pan_speed, 0)
-        if keys[pygame.K_d]:
-            self.camera.pan(pan_speed, 0)
+        # Handle continuous key presses for panning, but only if test is not running
+        if not self.is_perf_test_running:
+            keys = pygame.key.get_pressed()
+            pan_speed = self.config['camera']['pan_speed_pixels']
+            if keys[pygame.K_w]:
+                self.camera.pan(0, -pan_speed)
+            if keys[pygame.K_s]:
+                self.camera.pan(0, pan_speed)
+            if keys[pygame.K_a]:
+                self.camera.pan(-pan_speed, 0)
+            if keys[pygame.K_d]:
+                self.camera.pan(pan_speed, 0)
 
     def _update(self):
-        """Update application state (currently unused)."""
-        pass
+        """Update application state. Runs the performance test if active."""
+        if not self.is_perf_test_running:
+            return
+
+        if self.frame_count >= len(self._perf_test_path):
+            # Path is complete, but we may be waiting for duration_frames to end
+            return
+
+        action_data = self._perf_test_path[self.frame_count]
+        action = action_data.get('action')
+
+        if action == 'pan':
+            pan_speed_dx = action_data.get('dx', 0)
+            pan_speed_dy = action_data.get('dy', 0)
+            self.camera.pan(pan_speed_dx, pan_speed_dy)
+        elif action == 'zoom_in':
+            self.camera.zoom_in()
+        elif action == 'zoom_out':
+            self.camera.zoom_out()
 
     def _draw(self):
         """Renders the scene."""

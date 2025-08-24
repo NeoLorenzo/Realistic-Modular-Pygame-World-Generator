@@ -291,48 +291,34 @@ class WorldRenderer:
                         surface_to_draw = self._generate_placeholder_surface(cx, cy, view_mode)
                         self._request_chunk_surface(cx, cy, view_mode)
                 
-                # --- LOD Drawing Logic ---
-                if camera.zoom < 1.0:
-                    # --- Cache Invalidation ---
-                    # If the zoom has changed, the entire scaled cache is invalid.
-                    if camera.zoom != self._last_camera_zoom:
-                        self.scaled_surface_cache.clear()
-                        self._last_camera_zoom = camera.zoom
+                # --- Unified Scaling and Drawing Logic (Rule 3, Rule 13) ---
+                # This single, unified logic replaces the complex if/else block to correctly
+                # render chunks at any zoom level, fixing the visual bug at zoom >= 1.0.
 
-                    scaled_size = int(self.chunk_size * camera.zoom)
-                    if scaled_size < 1: continue
-                    
-                    scaled_surface = self.scaled_surface_cache.get(chunk_key)
-                    
-                    if scaled_surface is None:
-                        # Not in cache, so we perform the expensive scale operation ONCE.
-                        scaled_surface = pygame.transform.scale(surface_to_draw, (scaled_size, scaled_size))
-                        # Store the result in the cache for next time.
-                        self.scaled_surface_cache[chunk_key] = scaled_surface
+                # Calculate one scaled size for all chunks at the current zoom level.
+                # This is an approximation but is crucial for effective caching.
+                scaled_size = int(self.chunk_size * camera.zoom)
+                if scaled_size < 1:
+                    continue
 
-                    chunk_screen_pos = camera.world_to_screen(cx * self.chunk_size, cy * self.chunk_size)
-                    screen.blit(scaled_surface, chunk_screen_pos)
-                else:
-                    # Zoomed In (or 1:1): Blit a sub-section of the surface.
-                    # This is much faster than scaling up.
-                    chunk_world_x = cx * self.chunk_size
-                    chunk_world_y = cy * self.chunk_size
-                    view_x_in_chunk = top_left_wx - chunk_world_x
-                    view_y_in_chunk = top_left_wy - chunk_world_y
-                    
-                    # Determine the resolution of the surface we are actually drawing
-                    source_resolution = self.chunk_resolution if original_surface else self.placeholder_resolution
+                # --- Cache Invalidation ---
+                # If zoom changes, the required scaled size changes, so the entire cache is invalid.
+                if camera.zoom != self._last_camera_zoom:
+                    self.scaled_surface_cache.clear()
+                    self._last_camera_zoom = camera.zoom
 
-                    src_x = (view_x_in_chunk / self.chunk_size) * source_resolution
-                    src_y = (view_y_in_chunk / self.chunk_size) * source_resolution
-                    src_w = (bottom_right_wx - top_left_wx) / self.chunk_size * source_resolution
-                    src_h = (bottom_right_wy - top_left_wy) / self.chunk_size * source_resolution
-                    source_area = pygame.Rect(src_x, src_y, src_w, src_h)
-                    
-                    draw_pos = camera.world_to_screen(
-                        chunk_world_x + (source_area.x / source_resolution) * self.chunk_size,
-                        chunk_world_y + (source_area.y / source_resolution) * self.chunk_size
-                    )
-                    
-                    # BUG FIX: Use surface_to_draw, not original_surface.
-                    screen.blit(surface_to_draw, draw_pos, area=source_area)
+                # --- Cache Lookup ---
+                # The key is just the chunk's coordinate; the size is implicit from the zoom level.
+                scaled_surface = self.scaled_surface_cache.get(chunk_key)
+
+                if scaled_surface is None:
+                    # Not in cache, so perform the expensive scale operation ONCE per chunk,
+                    # per zoom level. This works correctly for both scaling up and down.
+                    scaled_surface = pygame.transform.scale(surface_to_draw, (scaled_size, scaled_size))
+                    self.scaled_surface_cache[chunk_key] = scaled_surface
+
+                # --- Drawing ---
+                # Calculate the on-screen position for this chunk and blit the cached,
+                # correctly-sized surface.
+                chunk_screen_pos = camera.world_to_screen(cx * self.chunk_size, cy * self.chunk_size)
+                screen.blit(scaled_surface, chunk_screen_pos)

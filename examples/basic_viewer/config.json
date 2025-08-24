@@ -18,5 +18,17 @@
     },
     "world_generation_parameters": {
         "seed": 42
+    },
+    "performance_test": {
+        "enabled": true,
+        "duration_frames": 550,
+        "path": [
+            { "action": "zoom_out", "frames": 50 },
+            { "action": "pan", "dx": -10, "dy": -10, "frames": 100 },
+            { "action": "pan", "dx": 10, "dy": -10, "frames": 100 },
+            { "action": "pan", "dx": 20, "dy": 0, "frames": 100 },
+            { "action": "pan", "dx": 10, "dy": 10, "frames": 100 },
+            { "action": "pan", "dx": 0, "dy": 20, "frames": 100 }
+        ]
     }
 }
