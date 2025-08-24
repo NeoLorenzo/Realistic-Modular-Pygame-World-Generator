@@ -72,7 +72,15 @@ class WorldGenerator:
         self._p = np.stack([p, p]).flatten() # Permutation table for noise
 
         self.logger.info(f"WorldGenerator initialized with seed: {self.seed}")
-        self.logger.info(f"World dimensions: {self.settings['world_width_chunks']}x{self.settings['world_height_chunks']} chunks ({self.world_width_cm}x{self.world_height_cm} cm)")
+        # Log dimensions in both base units (cm) and human-readable units (km) for clarity.
+        world_width_km = self.world_width_cm / 100000.0
+        world_height_km = self.world_height_cm / 100000.0
+        self.logger.info(
+            f"World dimensions: {self.settings['world_width_chunks']}x"
+            f"{self.settings['world_height_chunks']} chunks "
+            f"({self.world_width_cm}x{self.world_height_cm} cm / "
+            f"{world_width_km:.1f}x{world_height_km:.1f} km)"
+        )
 
     def _generate_base_noise(self, x_coords: np.ndarray, y_coords: np.ndarray, seed_offset: int = 0) -> np.ndarray:
         """A generic helper to produce a normalized noise map."""

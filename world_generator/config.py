@@ -47,6 +47,6 @@ TEMP_LEVELS = {
 # --- Rendering & Performance ---
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture
 PLACEHOLDER_RESOLUTION = 50 # Lower-res version for instant previews (Rule 8)
-CHUNK_SIZE_CM = 4000
-DEFAULT_WORLD_WIDTH_CHUNKS = 260
-DEFAULT_WORLD_HEIGHT_CHUNKS = 260
+CHUNK_SIZE_CM = 10000   # 100m = 10,000 cm. This is the core unit.
+DEFAULT_WORLD_WIDTH_CHUNKS = 160
+DEFAULT_WORLD_HEIGHT_CHUNKS = 90

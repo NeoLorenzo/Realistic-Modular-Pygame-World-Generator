@@ -9,7 +9,7 @@
         "pan_speed_pixels": 15,
         "zoom_speed": 0.1,
         "max_zoom": 1.0,
-        "min_zoom": 0.008
+        "min_zoom": 0.001
     },
     "profiling": {
         "enabled": true,
@@ -20,7 +20,7 @@
         "seed": 42
     },
     "performance_test": {
-        "enabled": true,
+        "enabled": false,
         "duration_frames": 550,
         "path": [
             { "action": "zoom_out", "frames": 50 },
