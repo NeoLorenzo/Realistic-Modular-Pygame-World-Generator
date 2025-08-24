@@ -114,8 +114,6 @@ class WorldGenerator:
 
     def _generate_base_noise(self, x_coords: np.ndarray, y_coords: np.ndarray, seed_offset: int = 0) -> np.ndarray:
         """A generic helper to produce a normalized noise map."""
-        self.logger.debug(f"Generating base noise for {x_coords.size} points with offset {seed_offset}.")
-        
         # Applying a seed offset to the coordinates ensures each map is unique.
         scaled_x = (x_coords + seed_offset) / self.settings['noise_scale']
         scaled_y = (y_coords + seed_offset) / self.settings['noise_scale']

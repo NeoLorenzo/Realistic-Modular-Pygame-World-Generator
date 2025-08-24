@@ -151,7 +151,8 @@ class WorldRenderer:
         if chunk_key in current_cache:
             return current_cache[chunk_key]
 
-        self.logger.debug(f"Generating new '{view_mode}' chunk surface for {chunk_key}")
+        # This log was removed as it is in a hot path and was called thousands of times,
+        # causing significant performance overhead as identified by profiling. (Rule 2.4)
         
         wx = np.linspace(chunk_x * self.chunk_size, (chunk_x + 1) * self.chunk_size, self.chunk_resolution)
         wy = np.linspace(chunk_y * self.chunk_size, (chunk_y + 1) * self.chunk_size, self.chunk_resolution)

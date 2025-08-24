@@ -12,7 +12,7 @@
         "min_zoom": 0.008
     },
     "profiling": {
-        "enabled": false,
+        "enabled": true,
         "log_count": 20,
         "output_dir": "profiles"
     },
