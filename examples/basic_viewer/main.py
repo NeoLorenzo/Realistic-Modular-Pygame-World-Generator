@@ -17,7 +17,7 @@ from datetime import datetime
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from world_generator.generator import WorldGenerator
-from world_generator.renderer import WorldRenderer
+from renderer import WorldRenderer
 from camera import Camera
 
 class Application:

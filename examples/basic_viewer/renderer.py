@@ -29,10 +29,36 @@ import logging
 # We use a type hint for the generator without creating a circular import
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from .generator import WorldGenerator
+    from world_generator.generator import WorldGenerator
 
 import numpy as np
-from . import config as DEFAULTS
+from world_generator import config as DEFAULTS
+
+# --- Default Color Mappings ---
+# These are used by the renderer if no other color map is provided.
+# Format: (R, G, B)
+COLOR_MAP_TERRAIN = {
+    "deep_water": (0, 0, 50),
+    "shallow_water": (26, 102, 255),
+    "sand": (240, 230, 140),
+    "grass": (34, 139, 34),
+    "dirt": (139, 69, 19),
+    "mountain": (112, 128, 144)
+}
+
+COLOR_MAP_TEMPERATURE = {
+    "coldest": (0, 0, 100),
+    "cold": (0, 0, 255),
+    "temperate": (255, 255, 0),
+    "hot": (255, 0, 0),
+    "hottest": (150, 0, 0)
+}
+
+COLOR_MAP_HUMIDITY = {
+    "dry": (210, 180, 140),
+    "wet": (70, 130, 180)
+}
+
 
 class WorldRenderer:
     """
@@ -54,9 +80,9 @@ class WorldRenderer:
         self.terrain_levels = DEFAULTS.TERRAIN_LEVELS
         self.temp_levels = DEFAULTS.TEMP_LEVELS
         self.color_maps = {
-            "terrain": DEFAULTS.COLOR_MAP_TERRAIN,
-            "temperature": DEFAULTS.COLOR_MAP_TEMPERATURE,
-            "humidity": DEFAULTS.COLOR_MAP_HUMIDITY
+            "terrain": COLOR_MAP_TERRAIN,
+            "temperature": COLOR_MAP_TEMPERATURE,
+            "humidity": COLOR_MAP_HUMIDITY
         }
         
         # A multi-level cache for different view modes

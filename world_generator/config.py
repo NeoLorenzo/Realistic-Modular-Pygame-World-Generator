@@ -44,31 +44,6 @@ TEMP_LEVELS = {
     "hottest": 1.0
 }
 
-# --- Default Color Mappings ---
-# These are used by the renderer if no other color map is provided.
-# Format: (R, G, B)
-COLOR_MAP_TERRAIN = {
-    "deep_water": (0, 0, 50),
-    "shallow_water": (26, 102, 255),
-    "sand": (240, 230, 140),
-    "grass": (34, 139, 34),
-    "dirt": (139, 69, 19),
-    "mountain": (112, 128, 144)
-}
-
-COLOR_MAP_TEMPERATURE = {
-    "coldest": (0, 0, 100),
-    "cold": (0, 0, 255),
-    "temperate": (255, 255, 0),
-    "hot": (255, 0, 0),
-    "hottest": (150, 0, 0)
-}
-
-COLOR_MAP_HUMIDITY = {
-    "dry": (210, 180, 140),
-    "wet": (70, 130, 180)
-}
-
 # --- Rendering & Performance ---
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture
 CHUNK_SIZE_CM = 4000
