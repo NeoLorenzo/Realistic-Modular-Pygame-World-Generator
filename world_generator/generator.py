@@ -109,17 +109,6 @@ class WorldGenerator:
         """Generates temperature data."""
         return self._generate_base_noise(x_coords, y_coords, seed_offset=self.settings['temp_seed_offset'])
 
-    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
-        """Generates humidity data."""
-        return self._generate_base_noise(x_coords, y_coords, seed_offset=self.settings['humidity_seed_offset'])
-        # All randomness is controlled by the master seed (Rule 12)
-        p = np.arange(256, dtype=int)
-        rng = np.random.default_rng(self.seed)
-        rng.shuffle(p)
-        self._p = np.stack([p, p]).flatten() # Permutation table for noise
-
-        self.logger.info(f"WorldGenerator initialized with seed: {self.seed}")
-
     def _generate_base_noise(self, x_coords: np.ndarray, y_coords: np.ndarray, seed_offset: int = 0) -> np.ndarray:
         """A generic helper to produce a normalized noise map."""
         # Applying a seed offset to the coordinates ensures each map is unique.
@@ -148,5 +137,3 @@ class WorldGenerator:
     def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
         """Generates humidity data."""
         return self._generate_base_noise(x_coords, y_coords, seed_offset=self.settings['humidity_seed_offset'])
-
-    # We will add get_temperature() and get_humidity() methods later.

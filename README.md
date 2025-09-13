@@ -198,3 +198,4 @@ The main dependencies for the project and its example viewer are:
 
 *   `pygame`: Used by the `basic_viewer` example for rendering and window management.
 *   `numpy`: The core dependency for the `world_generator` library, used for all numerical operations.
+*   `numba`: Used to JIT-compile the performance-critical Perlin noise function for a significant speedup.

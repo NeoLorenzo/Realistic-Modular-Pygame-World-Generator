@@ -130,10 +130,52 @@ class Application:
         pygame.display.set_caption("Realistic Modular World Generator")
         self.clock = pygame.time.Clock()
         self.tick_rate = display_config['clock_tick_rate']
+        
+        # Load the zoom threshold from config and set it as an instance attribute.
+        # This fixes the AttributeError crash.
+        self.high_res_threshold = self.config['camera']['high_res_request_zoom_threshold']
+        
         self.logger.info("Pygame initialized successfully.")
+
+    def _perform_initial_generation(self):
+        """Displays a loading message and generates placeholders for the ENTIRE world."""
+        self.logger.info("Starting placeholder generation for the entire world...")
+        
+        font = pygame.font.Font(None, 48)
+        text = font.render("Generating world, please wait...", True, (200, 200, 200))
+        text_rect = text.get_rect(center=(self.screen_width / 2, self.screen_height / 2))
+
+        self.screen.fill((10, 0, 20))
+        self.screen.blit(text, text_rect)
+        pygame.display.flip()
+
+        # Ask the renderer to generate and cache placeholders for the whole map.
+        self.world_renderer.prepare_entire_world(self.view_mode)
+        # Load the new zoom threshold for smart rendering requests
+        self.high_res_threshold = self.config['camera']['high_res_request_zoom_threshold']
+        self.logger.info("Pygame initialized successfully.")
+
+    def _perform_initial_generation(self):
+        """Displays a loading message and generates placeholders for the ENTIRE world."""
+        self.logger.info("Starting placeholder generation for the entire world...")
+        
+        font = pygame.font.Font(None, 48)
+        text = font.render("Generating world, please wait...", True, (200, 200, 200))
+        text_rect = text.get_rect(center=(self.screen_width / 2, self.screen_height / 2))
+
+        self.screen.fill((10, 0, 20))
+        self.screen.blit(text, text_rect)
+        pygame.display.flip()
+
+        # Ask the renderer to generate and cache placeholders for the whole map.
+        self.world_renderer.prepare_entire_world(self.view_mode)
+        self.logger.info("Entire world placeholder generation complete.")
 
     def run(self):
         """The main application loop."""
+        # Run the new loading method once before the game becomes interactive.
+        self._perform_initial_generation()
+
         self.logger.info("Entering main loop.")
         try:
             if self.profiler:
@@ -142,7 +184,9 @@ class Application:
             while self.is_running:
                 self._handle_events()
                 self._update()
-                self._draw()
+                # Pass the zoom threshold to the draw call
+                self.world_renderer.draw(self.screen, self.camera, self.view_mode, self.high_res_threshold)
+                pygame.display.flip()
                 self.clock.tick(self.tick_rate)
                 self.frame_count += 1
 

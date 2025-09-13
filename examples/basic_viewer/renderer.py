@@ -253,72 +253,81 @@ class WorldRenderer:
         self.placeholder_cache[view_mode][(chunk_x, chunk_y)] = surface
         return surface
 
-    def draw(self, screen: pygame.Surface, camera, view_mode: str):
-        """Draws the visible portion of the world to the screen."""
-        # First, process any chunks that the worker thread has finished.
-        self._process_completed_chunks()
+    def get_visible_chunks(self, camera, buffer: int = 0) -> list:
+        """Helper to calculate visible chunks, with an optional buffer."""
+        # Calculate the world coordinates for the corners of the buffered view
+        top_left_wx, top_left_wy = camera.screen_to_world(-buffer * self.chunk_size, -buffer * self.chunk_size)
+        bottom_right_wx, bottom_right_wy = camera.screen_to_world(
+            camera.screen_width + buffer * self.chunk_size, 
+            camera.screen_height + buffer * self.chunk_size
+        )
+        
+        start_x = int(top_left_wx // self.chunk_size)
+        end_x = int(bottom_right_wx // self.chunk_size)
+        start_y = int(top_left_wy // self.chunk_size)
+        end_y = int(bottom_right_wy // self.chunk_size)
+        
+        return [(cx, cy) for cx in range(start_x, end_x + 1) for cy in range(start_y, end_y + 1)]
 
+    def prepare_entire_world(self, view_mode: str):
+        """Synchronously generates all placeholders for the entire world map."""
+        world_width = self.generator.settings['world_width_chunks']
+        world_height = self.generator.settings['world_height_chunks']
+        
+        for cx in range(world_width):
+            for cy in range(world_height):
+                chunk_key = (cx, cy)
+                if chunk_key not in self.placeholder_cache[view_mode]:
+                    surface = self._generate_placeholder_surface(cx, cy, view_mode)
+                    self.placeholder_cache[view_mode][chunk_key] = surface
+
+    def draw(self, screen: pygame.Surface, camera, view_mode: str, high_res_zoom_threshold: float):
+        """Draws the visible world and intelligently pre-caches chunks."""
+        self._process_completed_chunks()
         screen.fill((10, 0, 20))
 
-        world_width_chunks = self.generator.settings['world_width_chunks']
-        world_height_chunks = self.generator.settings['world_height_chunks']
+        world_width = self.generator.settings['world_width_chunks']
+        world_height = self.generator.settings['world_height_chunks']
 
-        top_left_wx, top_left_wy = camera.screen_to_world(0, 0)
-        bottom_right_wx, bottom_right_wy = camera.screen_to_world(camera.screen_width, camera.screen_height)
-        
-        start_chunk_x = int(top_left_wx // self.chunk_size)
-        end_chunk_x = int(bottom_right_wx // self.chunk_size)
-        start_chunk_y = int(top_left_wy // self.chunk_size)
-        end_chunk_y = int(bottom_right_wy // self.chunk_size)
+        # --- 1. Smart Pre-caching: Only request high-res chunks when zoomed in ---
+        if camera.zoom >= high_res_zoom_threshold:
+            chunks_to_request = self.get_visible_chunks(camera, buffer=2)
+            for cx, cy in chunks_to_request:
+                if 0 <= cx < world_width and 0 <= cy < world_height:
+                    self._request_chunk_surface(cx, cy, view_mode)
 
-        current_cache = self.chunk_surface_cache[view_mode]
+        # --- 2. Draw: Render only the chunks currently on screen ---
+        visible_chunks = self.get_visible_chunks(camera, buffer=0)
+        high_res_cache = self.chunk_surface_cache[view_mode]
         placeholder_cache = self.placeholder_cache[view_mode]
 
-        for cx in range(start_chunk_x, end_chunk_x + 1):
-            for cy in range(start_chunk_y, end_chunk_y + 1):
-                if not (0 <= cx < world_width_chunks and 0 <= cy < world_height_chunks):
-                    continue
+        for cx, cy in visible_chunks:
+            if not (0 <= cx < world_width and 0 <= cy < world_height):
+                continue
 
-                chunk_key = (cx, cy)
-                original_surface = current_cache.get(chunk_key)
-                surface_to_draw = original_surface
+            chunk_key = (cx, cy)
+            # Use the high-res version if available, otherwise fall back to the placeholder.
+            surface_to_draw = high_res_cache.get(chunk_key) or placeholder_cache.get(chunk_key)
 
-                if surface_to_draw is None:
-                    # High-res surface isn't ready. Check for a placeholder.
-                    surface_to_draw = placeholder_cache.get(chunk_key)
-                    if surface_to_draw is None:
-                        # No placeholder exists; generate one now and request the real one.
-                        surface_to_draw = self._generate_placeholder_surface(cx, cy, view_mode)
-                        self._request_chunk_surface(cx, cy, view_mode)
-                
-                # --- Unified Scaling and Drawing Logic (Rule 3, Rule 13) ---
-                # This single, unified logic replaces the complex if/else block to correctly
-                # render chunks at any zoom level, fixing the visual bug at zoom >= 1.0.
+            if surface_to_draw is None:
+                # This is a safety net. Due to the initial load and pre-caching,
+                # this should almost never be needed during gameplay.
+                surface_to_draw = self._generate_placeholder_surface(cx, cy, view_mode)
+                placeholder_cache[chunk_key] = surface_to_draw
+            
+            # --- Scaling and Drawing Logic (Unchanged) ---
+            scaled_size = int(self.chunk_size * camera.zoom) + 2
+            if scaled_size < 1:
+                continue
 
-                # Calculate one scaled size for all chunks at the current zoom level.
-                # This is an approximation but is crucial for effective caching.
-                scaled_size = int(self.chunk_size * camera.zoom)
-                if scaled_size < 1:
-                    continue
+            if camera.zoom != self._last_camera_zoom:
+                self.scaled_surface_cache.clear()
+                self._last_camera_zoom = camera.zoom
 
-                # --- Cache Invalidation ---
-                # If zoom changes, the required scaled size changes, so the entire cache is invalid.
-                if camera.zoom != self._last_camera_zoom:
-                    self.scaled_surface_cache.clear()
-                    self._last_camera_zoom = camera.zoom
+            scaled_surface = self.scaled_surface_cache.get(chunk_key)
+            if scaled_surface is None:
+                scaled_surface = pygame.transform.scale(surface_to_draw, (scaled_size, scaled_size))
+                self.scaled_surface_cache[chunk_key] = scaled_surface
 
-                # --- Cache Lookup ---
-                # The key is just the chunk's coordinate; the size is implicit from the zoom level.
-                scaled_surface = self.scaled_surface_cache.get(chunk_key)
-
-                if scaled_surface is None:
-                    # Not in cache, so perform the expensive scale operation ONCE per chunk,
-                    # per zoom level. This works correctly for both scaling up and down.
-                    scaled_surface = pygame.transform.scale(surface_to_draw, (scaled_size, scaled_size))
-                    self.scaled_surface_cache[chunk_key] = scaled_surface
-
-                # --- Drawing ---
-                # Calculate the on-screen position for this chunk and blit the cached,
-                # correctly-sized surface.
-                chunk_screen_pos = camera.world_to_screen(cx * self.chunk_size, cy * self.chunk_size)
-                screen.blit(scaled_surface, chunk_screen_pos)
+            chunk_screen_pos = camera.world_to_screen(cx * self.chunk_size, cy * self.chunk_size)
+            screen.blit(scaled_surface, chunk_screen_pos)

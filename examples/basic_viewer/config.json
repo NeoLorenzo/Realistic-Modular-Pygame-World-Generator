@@ -9,7 +9,8 @@
         "pan_speed_pixels": 15,
         "zoom_speed": 0.1,
         "max_zoom": 1.0,
-        "min_zoom": 0.001
+        "min_zoom": 0.0017,
+        "high_res_request_zoom_threshold": 0.1
     },
     "profiling": {
         "enabled": true,
