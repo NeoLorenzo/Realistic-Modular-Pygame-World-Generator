@@ -1,27 +1,27 @@
 # Realistic Modular Pygame World Generator
 
-A standalone Python library for generating complex, scientifically-grounded worlds. Designed from the ground up for modularity, performance, and realism, this package allows developers to seamlessly integrate a powerful world-generation engine into any Python-based simulation, game, or project.
+A standalone Python library and interactive design tool for generating complex, scientifically-grounded worlds. Designed from the ground up for modularity, performance, and realism, this package allows developers to seamlessly integrate a powerful world-generation engine into any Python-based simulation, game, or project.
 
-The core philosophy is to create a data-first engine that produces emergent, believable climate systems based on interconnected physical principles, rather than disconnected layers of noise.
+The core philosophy is to create a data-first engine that produces emergent, believable climate systems based on interconnected physical principles, rather than disconnected layers of noise. The new interactive editor allows for rapid iteration and design before committing to a final, high-performance "baked" world.
 
 ## Table of Contents
 
 *   [Core Philosophy](#core-philosophy)
     *   [1. True Modularity (Plug-and-Play)](#1-true-modularity-plug-and-play)
     *   [2. Scientifically-Grounded Realism](#2-scientifically-grounded-realism)
-    *   [3. Efficiency and Performance](#3-efficiency-and-performance)
+    *   [3. Rapid, Interactive Design](#3-rapid-interactive-design)
+    *   [4. Efficiency and Performance](#4-efficiency-and-performance)
 *   [Project Structure](#project-structure)
-*   [System Architecture & Generation Pipeline](#system-architecture--generation-pipeline)
+*   [System Architecture: The Two-Tier Workflow](#system-architecture-the-two-tier-workflow)
+    *   [Tier 1: The Live Editor](#tier-1-the-live-editor)
+    *   [Tier 2: The Offline Baker](#tier-2-the-offline-baker)
     *   [The Generation Pipeline: From Seed to Climate](#the-generation-pipeline-from-seed-to-climate)
-    *   [The Configuration System](#the-configuration-system)
-    *   [The `WorldGenerator` Core](#the-worldgenerator-core)
-    *   [The `basic_viewer` Example](#the-basic_viewer-example)
 *   [Configuration Deep Dive](#configuration-deep-dive)
 *   [Performance Considerations](#performance-considerations)
 *   [Getting Started](#getting-started)
     *   [Prerequisites](#prerequisites)
-    *   [Installation & Running the Example](#installation--running-the-example)
-    *   [Controls](#controls)
+    *   [Installation & Running the Editor](#installation--running-the-editor)
+    *   [How to Use the Editor](#how-to-use-the-editor)
 *   [Using the Generator in Your Project](#using-the-generator-in-your-project)
 *   [Roadmap & Future Features](#roadmap--future-features)
 *   [Architectural Principles](#architectural-principles)
@@ -31,105 +31,93 @@ The core philosophy is to create a data-first engine that produces emergent, bel
 
 ## Core Philosophy
 
-The primary objective of this project is to create a world generator that is not just a feature of a larger application, but an atomic, reusable, and high-quality component. The design is built on three pillars:
+The project's design is built on four pillars:
 
 ### 1. True Modularity (Plug-and-Play)
 
-The generator is architected as a self-contained Python package (`world_generator/`) that has no knowledge of the application consuming it.
-
-*   **Decoupled Backend:** The core `WorldGenerator` class is a data-only engine. It works exclusively with NumPy arrays and has zero dependencies on Pygame or any other visualization library.
-*   **Dependency Injection (Rule 7, DIP):** The generator is initialized by passing in its dependencies—a configuration dictionary and a logger. It does not rely on global state or hardcoded file paths.
-*   **Clear Data Contract:** The package exposes a simple, well-documented interface for requesting world data. Its inputs are NumPy arrays of coordinates, and its outputs are NumPy arrays in **real-world scientific units** (e.g., Celsius for temperature, g/m³ for humidity).
+The generator is architected as a self-contained Python package (`world_generator/`) that has no knowledge of the application consuming it. Its data-only backend works with NumPy arrays and real-world scientific units (e.g., Celsius, g/m³).
 
 ### 2. Scientifically-Grounded Realism
 
-The goal is to generate worlds with believable and emergent characteristics, guided by a "realism first" principle (Rule 3).
+The goal is to generate worlds with believable and emergent characteristics. Climate is an emergent property of the terrain, with temperature affected by altitude (adiabatic lapse rate) and humidity driven by a pre-calculated **distance-to-water map**.
 
-*   **Interconnected Climate Model:** Climate is an emergent property of the terrain. Temperature is realistically affected by altitude (adiabatic lapse rate), and humidity is driven by a pre-calculated **distance-to-water map** and the air's temperature-dependent saturation point.
-*   **Procedural Generation:** The generator uses a robust implementation of Perlin noise to create the natural-looking fractal patterns that serve as the foundation for all layers.
-*   **Reproducibility:** The entire generation process is derived from a single **master seed** (Rule 12), ensuring that for a given seed and configuration, the world is perfectly reproducible.
+### 3. Rapid, Interactive Design
 
-### 3. Efficiency and Performance
+The project is more than just a generator; it's a design tool. The **Live Edit Mode** provides a real-time, full-world preview that updates instantly as you adjust parameters via a UI, allowing for fast iteration and creative exploration.
 
-Performance is a key design consideration, driven by profiling rather than guesswork (Rule 11).
+### 4. Efficiency and Performance
 
-*   **Vectorized Operations (Rule 11.2):** All heavy-duty mathematical calculations are performed on NumPy arrays, leveraging highly-optimized, pre-compiled C code.
-*   **Intelligent Pre-computation:** For complex global effects like coastal humidity, the generator performs a one-time, low-resolution analysis of the entire world at startup. This allows for extremely fast, high-quality results during interactive use.
-*   **JIT Compilation:** The most performance-critical code, the Perlin noise algorithm, is Just-In-Time compiled to near-native speed using Numba.
+Performance is a key design consideration, driven by profiling (Rule 11). The editor uses a single, low-resolution preview for interactivity, while the final output is a "baked" set of image tiles, enabling a potential viewer to run with maximum performance by offloading all generation to a one-time, offline process.
 
 ## Project Structure
 
 ```
 Realistic-Modular-Pygame-World-Generator/
-├── world_generator/                # The core, standalone, data-only library.
-│   ├── generator.py                # Contains the main WorldGenerator class.
-│   ├── noise.py                    # Optimized Perlin noise implementation.
-│   └── config.py                   # Default internal constants for the generator.
+├── bake_world.py                   # Standalone script for offline world rendering.
 │
-├── examples/basic_viewer/          # A sample Pygame application using the library.
+├── examples/basic_viewer/          # The interactive world design tool.
 │   ├── main.py                     # Application entry point and main loop.
 │   ├── renderer.py                 # Pygame-specific rendering logic.
 │   ├── camera.py                   # Handles view transformations (pan/zoom).
-│   ├── config.json                 # Simulation parameters for the viewer.
-│   └── logging_config.json         # Logging configuration for the viewer.
+│   ├── config.json                 # Default simulation parameters for the editor.
+│   └── logging_config.json         # Logging configuration for the editor.
 │
 ├── requirements.txt                # Project dependencies.
-└── README.md                       # This file.
+│
+└── world_generator/                # The core, standalone, data-only library.
+    ├── generator.py                # Contains the main WorldGenerator class.
+    ├── noise.py                    # Optimized Perlin noise implementation.
+    ├── config.py                   # Default internal constants for the generator.
+    └── color_maps.py               # Shared color mapping utilities.
 ```
 
-## System Architecture & Generation Pipeline
+## System Architecture: The Two-Tier Workflow
+
+The project now operates using a powerful two-tier workflow that separates the creative design process from the final, high-performance output.
+
+### Tier 1: The Live Editor
+
+When you run `main.py`, you enter the Live Editor. Its purpose is rapid design and iteration.
+*   **Single Preview Surface:** Instead of rendering thousands of chunks, the editor generates one single, moderately-sized image of the entire world.
+*   **Real-Time Feedback:** This preview image is regenerated whenever you change a parameter using the UI sliders, providing instant visual feedback.
+*   **Pixelated Zoom:** Zooming is fast but pixelated, as it simply scales the single preview image. This is by design to maintain interactivity.
+*   **Non-Destructive:** All changes are made in memory. The original `config.json` is never modified.
+
+### Tier 2: The Offline Baker
+
+When you are satisfied with your world design in the editor, you can use the "Bake World" feature.
+*   **Asynchronous Process:** Clicking the "Bake World" button launches the `bake_world.py` script as a completely separate, non-blocking background process. The editor remains responsive.
+*   **Configuration Snapshot:** The baker is given a temporary configuration file containing the exact parameters you set with the sliders.
+*   **High-Quality Output:** The baker script iterates through every chunk of the world, generates the full-resolution (100x100 pixel) data, and saves it as a PNG image tile to a structured directory (e.g., `baked_worlds/seed_42/terrain/chunk_0_0.png`).
+*   **Performance Goal:** This slow, one-time process does all the heavy lifting upfront, enabling a future "Baked Viewer" to load these images for a perfectly smooth, high-detail experience with zero generation overhead.
 
 ### The Generation Pipeline: From Seed to Climate
 
-The generator follows a strict, ordered pipeline to ensure that climate is an emergent property of the terrain. Data for a given point is generated on-demand, but always in this sequence:
-
-1.  **Elevation:** Two layers of Perlin noise are combined to form the base terrain. A low-frequency "base" layer creates continents, and a high-frequency "detail" layer adds mountains and roughness. The result is a normalized `[0, 1]` elevation value. This is the foundational data upon which everything else is built.
-
-2.  **Distance-to-Water (Pre-computed):** During the `WorldGenerator`'s initialization, it analyzes the entire world's low-resolution elevation map. It identifies all water bodies and uses a Euclidean Distance Transform (`scipy.ndimage.distance_transform_edt`) to create a "distance map," where the value of each point is its real-world distance to the nearest coast. This map is a critical, performance-enabling abstraction (Rule 8).
-
-3.  **Temperature (Celsius):** When temperature is requested, the generator first calculates a base sea-level temperature using Perlin noise, centered around the `TARGET_SEA_LEVEL_TEMP_C` from the config. It then fetches the **elevation** for the same point and applies the **adiabatic lapse rate**, reducing the temperature realistically. The final result is a value in Celsius.
-
-4.  **Humidity (Absolute, g/m³):** This is the final and most complex step, combining all previous data:
-    *   It first fetches the final **temperature (Celsius)**.
-    *   Using a scientific formula (an abstraction of the Clausius-Clapeyron relation), it calculates the **saturation humidity**—the maximum amount of water vapor the air can hold at that temperature.
-    *   It then fetches the **distance-to-water** value from the pre-computed map. This determines the **relative humidity** (from 100% at the coast to 0% far inland).
-    *   A final layer of Perlin noise is applied to add local variation.
-    *   The final result is the **absolute humidity** in grams per cubic meter (g/m³), a direct product of the interconnected terrain and climate systems.
-
-### The Configuration System
-
-The project uses a two-tiered configuration system (Rule 1):
-
-1.  **Application Constants (`world_generator/config.py`):** This file contains the default, fallback values for the simulation. It is the canonical source for all tunable parameters and their real-world units.
-2.  **Simulation Parameters (`examples/basic_viewer/config.json`):** This file allows a user to override any of the default constants for a specific run, enabling experiments without modifying the core codebase.
-
-### The `WorldGenerator` Core
-
-The `WorldGenerator` class is the heart of the library. It is initialized with a configuration dictionary and a logger. Its public methods (`get_elevation`, `get_temperature`, `get_humidity`) serve data in real-world units, enforcing a clean data contract.
-
-### The `basic_viewer` Example
-
-The `main.py` file in the viewer acts as the **composition root**. It instantiates the `WorldGenerator` and injects it as a dependency into the `WorldRenderer`. The renderer's job is to request data from the generator and **normalize** it from its real-world units (e.g., -50°C to +50°C) back to a `[0, 1]` range suitable for mapping to a color gradient.
+The underlying data generation remains the same, ensuring a realistic foundation. The pipeline is always executed in this order:
+1.  **Elevation:** The foundational terrain.
+2.  **Distance-to-Water (Pre-computed):** Enables realistic coastal climates.
+3.  **Temperature (Celsius):** A function of noise, altitude, and latitude.
+4.  **Humidity (Absolute, g/m³):** An emergent property of temperature and distance from water.
 
 ## Configuration Deep Dive
 
-The following key parameters in `world_generator/config.py` can be overridden in `config.json` to dramatically alter the generated world:
+The Live Editor allows you to modify these key parameters from `world_generator/config.py` in real-time:
 
-| Parameter                         | Unit    | Default | Description                                                                                                                            |
-| --------------------------------- | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `TARGET_SEA_LEVEL_TEMP_C`         | Celsius | `15.0`  | The "thermostat" for the world. The average temperature at sea level. Higher values create warmer worlds.                              |
-| `LAPSE_RATE_C_PER_UNIT_ELEVATION` | °C / ΔE | `40.0`  | Temperature drop for a full elevation change. Controls how cold mountains get.                                                         |
-| `MAX_COASTAL_DISTANCE_KM`         | km      | `150.0` | The distance over which humidity falls from coastal to arid levels. A larger value creates wider, more humid coastal regions.            |
-| `SEASONAL_VARIATION_C`            | Celsius | `30.0`  | The temperature swing (`+/- 15°C`) from the target average, driven by noise. Higher values create more extreme hot and cold zones.      |
-| `TERRAIN_BASE_FEATURE_SCALE_KM`   | km      | `40.0`  | The size of continents. Increase for larger, more sprawling landmasses.                                                                |
-| `TERRAIN_DETAIL_FEATURE_SCALE_KM` | km      | `2.5`   | The size of mountains and coastal features.                                                                                            |
-| `DETAIL_NOISE_WEIGHT`             | float   | `0.25`  | How much the detail layer influences the base terrain. Higher values create rougher, more mountainous worlds.                          |
+| Parameter                         | Unit    | Default | UI Control        | Description                                                                                                                            |
+| --------------------------------- | ------- | ------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `TARGET_SEA_LEVEL_TEMP_C`         | Celsius | `15.0`  | Slider            | The "thermostat" for the world. Higher values create warmer worlds.                                                                    |
+| `DETAIL_NOISE_WEIGHT`             | float   | `0.25`  | Slider            | How much the detail layer influences the base terrain. Higher values create rougher, more mountainous worlds.                          |
+| `LAPSE_RATE_C_PER_UNIT_ELEVATION` | °C / ΔE | `40.0`  | Slider            | Temperature drop for a full elevation change. Controls how cold mountains get.                                                         |
+| `TERRAIN_BASE_FEATURE_SCALE_KM`   | km      | `40.0`  | Slider            | The size of continents. Increase for larger, more sprawling landmasses.                                                                |
+| `TERRAIN_AMPLITUDE`               | float   | `2.5`   | Slider            | The sharpness of the terrain. Higher values create more dramatic, steeper mountains and deeper valleys.                                |
+| `POLAR_TEMPERATURE_DROP_C`        | Celsius | `30.0`  | Slider            | The total temperature difference between the equator and the poles.                                                                    |
+| `world_width_chunks`              | chunks  | `800`   | Text Input        | The width of the world in chunks. Requires clicking "Apply Size Changes".                                                              |
+| `world_height_chunks`             | chunks  | `450`   | Text Input        | The height of the world in chunks. Requires clicking "Apply Size Changes".                                                               |
 
 ## Performance Considerations
 
-The generator is highly optimized, but performance can be influenced by configuration:
-*   **`DISTANCE_MAP_RESOLUTION_FACTOR`**: This setting (default `0.1`) has the most significant impact on startup time. A higher value (e.g., `0.25`) will create a more accurate distance-to-water map at the cost of a longer one-time pre-computation. A lower value will speed up startup but may result in a blockier, less precise humidity gradient. The core interactive loop is unaffected.
-*   **Noise Octaves**: Increasing `BASE_NOISE_OCTAVES` or `DETAIL_NOISE_OCTAVES` will add visual complexity but has a direct, linear impact on the performance of all data generation calls.
+*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `renderer.py`. Higher values provide a more detailed preview at the cost of slower regeneration after changing a parameter.
+*   **Baking:** The baking process is CPU-bound and its duration is directly proportional to the total number of chunks (`width * height`). It is intended to be a long-running, offline task.
 
 ## Getting Started
 
@@ -138,7 +126,7 @@ The generator is highly optimized, but performance can be influenced by configur
 *   Python 3.8+
 *   Git
 
-### Installation & Running the Example
+### Installation & Running the Editor
 
 1.  **Clone the repository:**
     ```sh
@@ -155,52 +143,46 @@ The generator is highly optimized, but performance can be influenced by configur
     ```sh
     pip install -r requirements.txt
     ```
-4.  **Run the basic viewer application:**
+4.  **Run the Live Editor application:**
     ```sh
     python examples/basic_viewer/main.py
     ```
 
-### Controls
+### How to Use the Editor
 
-*   **Pan:** `W`, `A`, `S`, `D` keys
-*   **Zoom:** Mouse Wheel Up/Down
-*   **Cycle View Mode:** `V` key (Terrain, Temperature, Humidity)
-*   **Exit:** `ESC` key or close the window
+*   **Live Parameter Tuning:** Use the sliders on the right-hand panel to adjust world parameters. The preview will update automatically.
+*   **Custom World Size:** Enter new dimensions (in chunks) into the text boxes and click **"Apply Size Changes"** to re-initialize the world.
+*   **Baking Your World:** When you are satisfied with the design, click **"Bake World"**. This will start the slow, offline rendering process in the background. The editor will remain responsive.
+*   **Standard Controls:**
+    *   **Pan:** `W`, `A`, `S`, `D` keys
+    *   **Zoom:** Mouse Wheel Up/Down
+    *   **Cycle View Mode:** `V` key (Terrain, Temperature, Humidity)
+    *   **Exit:** `ESC` key or close the window
 
 ## Using the Generator in Your Project
 
-A minimal, non-Pygame example of using the library:
+The core library in the `world_generator/` folder remains fully independent. You can use it in any project for procedural data generation, as shown in the minimal example below:
 
 ```python
 import numpy as np
 import logging
 from world_generator.generator import WorldGenerator
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("my_simulation")
 
 my_config = { "seed": 999, "target_sea_level_temp_c": 25.0 }
 world_gen = WorldGenerator(config=my_config, logger=logger)
 
-x_coords, y_coords = np.meshgrid(
-    np.linspace(1000000, 1001000, 5), # Coords are in cm
-    np.linspace(1000000, 1001000, 5)
-)
-temperature_data_celsius = world_gen.get_temperature(x_coords, y_coords)
-
-print("--- Generated 5x5 Temperature Grid (in Celsius) ---")
-with np.printoptions(precision=2, suppress=True):
-    print(temperature_data_celsius)
+# ... request data from world_gen ...
 ```
 
 ## Roadmap & Future Features
 
-This generator provides a strong foundation for more complex simulations. Future development will focus on adding new, interconnected layers:
-
-*   **Biome Generation:** A system to classify areas based on their final elevation, temperature, and humidity into distinct biomes (e.g., Tundra, Desert, Rainforest, etc.).
+*   **Baked World Viewer Mode:** The logical counterpart to the baker. A new application mode to load and explore a pre-baked world at maximum performance and detail.
+*   **Biome Generation:** A system to classify areas based on their final elevation, temperature, and humidity into distinct biomes (e.g., Tundra, Desert, Rainforest).
 *   **Prevailing Winds & Rain Shadows:** A model for global wind patterns that would cause the windward side of mountain ranges to be wet and the leeward side to be arid deserts.
-*   **Hydraulic Erosion & River Networks:** An algorithm to simulate water flow, carving rivers from mountains to the sea and forming lakes in basins.
-*   **World Serialization:** Methods to save a generated world's seed and configuration, and potentially cache generated data to disk for faster re-loading.
+*   **Hydraulic Erosion & River Networks:** An algorithm to simulate water flow, carving rivers from mountains to the sea.
 
 ## Architectural Principles
 
@@ -213,14 +195,12 @@ This project is developed under a strict set of internal rules that enforce high
 
 ## Contributing
 
-Contributions are welcome. Please adhere to the established architectural principles when proposing changes. All new features should follow the incremental development pattern:
-1.  Define a clear, testable hypothesis (Rule 6).
-2.  Propose the change using the Before/After format (Rule 10).
-3.  Ensure all new logic is covered by the project's principles of realism and performance.
+Contributions are welcome. Please adhere to the established architectural principles when proposing changes.
 
 ## Dependencies
 
-*   `pygame`: Used by the `basic_viewer` example for rendering.
+*   `pygame-ce`: Used by the `basic_viewer` example for rendering and UI.
+*   `pygame-gui`: Used for the interactive UI elements in the editor.
 *   `numpy`: The core dependency for all numerical operations.
 *   `numba`: Used to JIT-compile the performance-critical Perlin noise function.
 *   `scipy`: Used for the Euclidean Distance Transform to enable the realistic humidity model.

@@ -10,6 +10,9 @@ import cProfile
 import pstats
 import io
 from datetime import datetime
+import pygame_gui
+import subprocess
+import time
 
 # To import from the parent directory (Modular_Pygame_World_Generator),
 # we add it to the Python path.
@@ -19,6 +22,16 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from world_generator.generator import WorldGenerator
 from renderer import WorldRenderer
 from camera import Camera
+
+# --- UI Constants (Rule 1) ---
+UI_PANEL_WIDTH = 320
+UI_ELEMENT_HEIGHT = 25
+UI_SLIDER_HEIGHT = 50
+UI_PADDING = 10
+UI_BUTTON_HEIGHT = 40
+# An estimated average size for a 100x100 chunk PNG in KB.
+# This is a scientifically-grounded abstraction (Rule 8) for the UI estimate.
+ESTIMATED_CHUNK_SIZE_KB = 15.0
 
 class Application:
     """The main application class for the basic viewer."""
@@ -30,6 +43,31 @@ class Application:
         self.config = self._load_config()
         self._setup_pygame()
 
+        # --- State ---
+        self.view_modes = ["terrain", "temperature", "humidity"]
+        self.current_view_mode_index = 0
+        self.view_mode = self.view_modes[self.current_view_mode_index]
+        self.frame_count = 0
+
+        # --- UI Setup ---
+        self.ui_manager = None # To be initialized in _setup_ui
+        self.ui_panel = None
+        # Sliders
+        self.temp_slider = None
+        self.roughness_slider = None
+        self.lapse_rate_slider = None
+        self.continent_size_slider = None
+        self.terrain_amplitude_slider = None
+        self.polar_drop_slider = None
+        # World Size Inputs
+        self.world_width_input = None
+        self.world_height_input = None
+        self.apply_size_button = None
+        # Bake Controls
+        self.bake_button = None
+        self.size_estimate_label = None
+        self._setup_ui()
+
         # --- Profiling Setup (Rule 11) ---
         self.profiler = None
         if self.config.get('profiling', {}).get('enabled', False):
@@ -37,12 +75,6 @@ class Application:
             self.logger.info("Profiling is ENABLED.")
         else:
             self.logger.info("Profiling is DISABLED.")
-
-        # --- State ---
-        self.view_modes = ["terrain", "temperature", "humidity"]
-        self.current_view_mode_index = 0
-        self.view_mode = self.view_modes[self.current_view_mode_index]
-        self.frame_count = 0
 
         # --- Performance Test State (Rule 11) ---
         self.perf_test_config = self.config.get('performance_test', {})
@@ -62,16 +94,20 @@ class Application:
                 for _ in range(step['frames']):
                     self._perf_test_path.append(step)
 
+        # --- State for Live Preview Mode ---
+        self.live_preview_surface = None
+        self.world_params_dirty = True # Flag to trigger regeneration
+
         # --- Dependency Injection (Rule 7, DIP) ---
-        # The Generator is created first and becomes the authority on the world.
+        # The Generator is the authority on world data, but is now used on-demand by the renderer.
         self.world_generator = WorldGenerator(
             config=self.config.get('world_generation_parameters', {}),
             logger=self.logger
         )
-        # Other components are given the generator instance to query for info.
+        # The camera still needs the generator for world dimensions.
         self.camera = Camera(self.config, self.world_generator)
+        # The renderer is now independent of a generator instance at startup.
         self.world_renderer = WorldRenderer(
-            generator=self.world_generator,
             logger=self.logger
         )
 
@@ -142,89 +178,188 @@ class Application:
         
         self.logger.info("Pygame initialized successfully.")
 
-    def _perform_initial_generation(self):
-        """Displays a loading message and generates placeholders for the ENTIRE world."""
-        self.logger.info("Starting placeholder generation for the entire world...")
-        
-        font = pygame.font.Font(None, 48)
-        text = font.render("Generating world, please wait...", True, (200, 200, 200))
-        text_rect = text.get_rect(center=(self.screen_width / 2, self.screen_height / 2))
+    def _setup_ui(self):
+        """Initializes the pygame_gui manager and creates the UI layout."""
+        self.ui_manager = pygame_gui.UIManager((self.screen_width, self.screen_height))
+        self.logger.info("UI Manager initialized.")
 
-        self.screen.fill((10, 0, 20))
-        self.screen.blit(text, text_rect)
-        pygame.display.flip()
+        # --- Create the main UI Panel ---
+        panel_rect = pygame.Rect(
+            self.screen_width - UI_PANEL_WIDTH, 0,
+            UI_PANEL_WIDTH, self.screen_height
+        )
+        self.ui_panel = pygame_gui.elements.UIPanel(
+            relative_rect=panel_rect,
+            manager=self.ui_manager,
+            starting_height=1
+        )
 
-        # Ask the renderer to generate and cache placeholders for the whole map.
-        self.world_renderer.prepare_entire_world(self.view_mode)
-        # Load the new zoom threshold for smart rendering requests
-        self.high_res_threshold = self.config['camera']['high_res_request_zoom_threshold']
-        self.logger.info("Pygame initialized successfully.")
+        # --- UI Element Layout Variables ---
+        current_y = UI_PADDING
+        element_width = UI_PANEL_WIDTH - (3 * UI_PADDING) # Width inside the panel
 
-    def _perform_initial_generation(self):
-        """Displays a hyper-accurate loading bar while generating all world placeholders."""
-        self.logger.info("Starting placeholder generation for the entire world...")
+        # --- Get world parameters for setting initial slider values ---
+        world_params = self.config['world_generation_parameters']
 
-        # --- UI Element Setup ---
-        font_status = pygame.font.Font(None, 48)
-        font_percent = pygame.font.Font(None, 40)
-        text_color = (220, 220, 220)
-        bar_color = (60, 180, 80)
-        bg_color = (10, 0, 20)
-        bar_border_color = (150, 150, 150)
+        # --- Slider 1: Target Sea Level Temperature ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Sea Level Temp (°C)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
 
-        bar_width = self.screen_width * 0.6
-        bar_height = 50
-        bar_x = (self.screen_width - bar_width) / 2
-        bar_y = (self.screen_height - bar_height) / 2
+        self.temp_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_params.get('target_sea_level_temp_c', 15.0),
+            value_range=(-20.0, 40.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
 
-        # --- Generation Loop ---
-        import time
-        target_frame_duration = 1.0 / 60.0  # Target 60 FPS for UI updates
-        last_update_time = 0
-        
-        # The renderer's prepare method is now a generator we can loop over.
-        for progress, status in self.world_renderer.prepare_entire_world():
-            # --- Throttling Logic (Rule 2.4) ---
-            # We now check the time BEFORE processing events or drawing.
-            # This ensures the main thread focuses on generation and only pauses
-            # to update the UI at a fixed interval.
-            current_time = time.perf_counter()
-            if current_time - last_update_time < target_frame_duration:
-                continue # Skip UI update and event handling for this chunk
+        # --- Slider 2: Detail Noise Weight (Mountain Roughness) ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Mountain Roughness",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
 
-            # --- If enough time has passed, update the UI ---
-            last_update_time = current_time
+        self.roughness_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_params.get('detail_noise_weight', 0.25),
+            value_range=(0.0, 1.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
 
-            # Abort if user quits during loading
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
-                    self.is_running = False
-                    # Cleanly exit the generator loop
-                    return
+        # --- Slider 3: Lapse Rate (Mountain Coldness) ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Mountain Coldness (°C Drop)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
 
-            # --- Drawing Logic ---
-            self.screen.fill(bg_color)
+        self.lapse_rate_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_params.get('lapse_rate_c_per_unit_elevation', 40.0),
+            value_range=(0.0, 100.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
 
-            # Status Text (e.g., "Preparing terrain maps...")
-            status_text_surf = font_status.render(status, True, text_color)
-            status_text_rect = status_text_surf.get_rect(center=(self.screen_width / 2, bar_y - 50))
-            self.screen.blit(status_text_surf, status_text_rect)
+        # --- Slider 4: Continent Size ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Continent Size (km)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
 
-            # Loading Bar Background/Border
-            pygame.draw.rect(self.screen, bar_border_color, (bar_x, bar_y, bar_width, bar_height), 2)
+        self.continent_size_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_params.get('terrain_base_feature_scale_km', 40.0),
+            value_range=(5.0, 200.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
 
-            # Loading Bar Fill
-            fill_width = bar_width * (progress / 100.0)
-            pygame.draw.rect(self.screen, bar_color, (bar_x, bar_y, fill_width, bar_height))
+        # --- Slider 5: Terrain Amplitude (Sharpness) ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Terrain Amplitude (Sharpness)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
 
-            # Percentage Text
-            percent_text_surf = font_percent.render(f"{progress:.1f}%", True, text_color)
-            percent_text_rect = percent_text_surf.get_rect(center=(self.screen_width / 2, bar_y + bar_height / 2))
-            self.screen.blit(percent_text_surf, percent_text_rect)
+        self.terrain_amplitude_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_params.get('terrain_amplitude', 2.5),
+            value_range=(0.5, 5.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
 
-            pygame.display.flip()
+        # --- Slider 6: Polar Temperature Drop ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Equator-to-Pole Temp Drop (°C)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
 
-        self.logger.info("Entire world placeholder generation complete.")
+        self.polar_drop_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_params.get('polar_temperature_drop_c', 30.0),
+            value_range=(0.0, 80.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + (UI_PADDING * 2)
+
+        # --- World Size Inputs ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="World Size (Width x Height in Chunks)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        input_width = (element_width - UI_PADDING) // 2
+        self.world_width_input = pygame_gui.elements.UITextEntryLine(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, input_width, UI_ELEMENT_HEIGHT),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        self.world_width_input.set_text(str(world_params.get('world_width_chunks', 800)))
+
+        self.world_height_input = pygame_gui.elements.UITextEntryLine(
+            relative_rect=pygame.Rect(UI_PADDING + input_width + UI_PADDING, current_y, input_width, UI_ELEMENT_HEIGHT),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        self.world_height_input.set_text(str(world_params.get('world_height_chunks', 450)))
+        current_y += UI_ELEMENT_HEIGHT + UI_PADDING
+
+        self.apply_size_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_BUTTON_HEIGHT),
+            text="Apply Size Changes",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_BUTTON_HEIGHT + (UI_PADDING * 2)
+
+        # --- Bake Button and Size Estimate ---
+        self.size_estimate_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Estimated size: calculating...",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        self.bake_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_BUTTON_HEIGHT),
+            text="Bake World",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+
+        # Set the initial size estimate
+        self._update_bake_size_estimate()
 
     def run(self):
         """The main application loop."""
@@ -240,19 +375,22 @@ class Application:
                 self.profiler.enable()
 
             start_time = time.perf_counter()
-            self._perform_initial_generation()
+            # This is a placeholder for a future benchmark of the live preview generation
+            self.world_renderer.generate_live_preview_surface(
+                world_params=self.config['world_generation_parameters'],
+                view_mode=self.view_mode
+            )
             end_time = time.perf_counter()
             
             if self.profiler:
                 self.profiler.disable() # Disable immediately to isolate the measurement.
 
             duration = end_time - start_time
-            self.logger.info(f"Benchmark complete. Placeholder generation took: {duration:.3f} seconds.")
+            self.logger.info(f"Benchmark complete. Live preview generation took: {duration:.3f} seconds.")
             
             self.is_running = False
         else:
-            # In normal mode, do NOT profile the loading screen.
-            self._perform_initial_generation()
+            # The loading screen is no longer called.
             self.logger.info("Entering main loop.")
             
             # Profile ONLY the interactive session.
@@ -261,12 +399,31 @@ class Application:
 
         try:
             while self.is_running:
+                time_delta = self.clock.tick(self.tick_rate) / 1000.0
+                
                 self._handle_events()
                 self._update()
-                # Pass the zoom threshold to the draw call
-                self.world_renderer.draw(self.screen, self.camera, self.view_mode, self.high_res_threshold)
+
+                # --- Live Preview Regeneration (Rule 5) ---
+                # If any parameter has changed, regenerate the single preview surface.
+                if self.world_params_dirty:
+                    self.logger.info(f"World parameters changed. Regenerating live preview for view mode: '{self.view_mode}'...")
+                    # Pass the complete, current world parameters to the renderer.
+                    self.live_preview_surface = self.world_renderer.generate_live_preview_surface(
+                        world_params=self.config['world_generation_parameters'],
+                        view_mode=self.view_mode
+                    )
+                    self.world_params_dirty = False
+                    self.logger.info("Live preview regeneration complete.")
+
+                # The new drawing method uses the pre-generated surface.
+                self.world_renderer.draw_live_preview(self.screen, self.camera, self.live_preview_surface)
+                
+                # --- UI Processing ---
+                self.ui_manager.update(time_delta)
+                self.ui_manager.draw_ui(self.screen)
+
                 pygame.display.flip()
-                self.clock.tick(self.tick_rate)
                 self.frame_count += 1
 
                 # Performance test exit condition
@@ -283,9 +440,6 @@ class Application:
                 self.profiler.disable()
                 self._report_profiling_results()
 
-            # Cleanly shut down the renderer's worker thread before exiting
-            self.world_renderer.shutdown()
-
             self.logger.info("Exiting application.")
             pygame.quit()
             sys.exit()
@@ -293,6 +447,9 @@ class Application:
     def _handle_events(self):
         """Processes user input and other events."""
         for event in pygame.event.get():
+            # Pass events to the UI Manager first
+            self.ui_manager.process_events(event)
+
             if event.type == pygame.QUIT:
                 self.is_running = False
             # Allow manual exit via ESC key even during a performance test
@@ -304,6 +461,32 @@ class Application:
             if self.is_perf_test_running:
                 continue  # Skip to the next event
 
+            # --- Handle UI Events for Live Editing ---
+            if event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
+                new_value = event.value
+                params = self.config['world_generation_parameters']
+                
+                if event.ui_element == self.temp_slider:
+                    params['target_sea_level_temp_c'] = new_value
+                elif event.ui_element == self.roughness_slider:
+                    params['detail_noise_weight'] = new_value
+                elif event.ui_element == self.lapse_rate_slider:
+                    params['lapse_rate_c_per_unit_elevation'] = new_value
+                elif event.ui_element == self.continent_size_slider:
+                    params['terrain_base_feature_scale_km'] = new_value
+                elif event.ui_element == self.terrain_amplitude_slider:
+                    params['terrain_amplitude'] = new_value
+                elif event.ui_element == self.polar_drop_slider:
+                    params['polar_temperature_drop_c'] = new_value
+                
+                self.world_params_dirty = True
+            
+            if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                if event.ui_element == self.bake_button:
+                    self._start_background_bake()
+                elif event.ui_element == self.apply_size_button:
+                    self._apply_world_size_changes()
+
             # --- Handle user-driven events only if test is not running ---
             if event.type == pygame.MOUSEWHEEL:
                 if event.y > 0:
@@ -314,6 +497,7 @@ class Application:
                 if event.key == pygame.K_v:
                     self.current_view_mode_index = (self.current_view_mode_index + 1) % len(self.view_modes)
                     self.view_mode = self.view_modes[self.current_view_mode_index]
+                    self.world_params_dirty = True # Trigger regeneration on view change
                     self.logger.info(f"Event: View switched to '{self.view_mode}'")
 
         # Handle continuous key presses for panning, but only if test is not running
@@ -328,6 +512,100 @@ class Application:
                 self.camera.pan(-pan_speed, 0)
             if keys[pygame.K_d]:
                 self.camera.pan(pan_speed, 0)
+
+    def _apply_world_size_changes(self):
+        """
+        Parses text inputs for world size, updates the config, and re-initializes
+        core components that depend on world dimensions.
+        """
+        try:
+            new_width = int(self.world_width_input.get_text())
+            new_height = int(self.world_height_input.get_text())
+
+            if new_width <= 0 or new_height <= 0:
+                self.logger.warning("World dimensions must be positive integers.")
+                return
+
+            self.logger.info(f"Applying new world size: {new_width}x{new_height} chunks.")
+
+            # 1. Update the configuration dictionary
+            self.config['world_generation_parameters']['world_width_chunks'] = new_width
+            self.config['world_generation_parameters']['world_height_chunks'] = new_height
+
+            # 2. Re-initialize the WorldGenerator with the updated config
+            self.world_generator = WorldGenerator(
+                config=self.config.get('world_generation_parameters', {}),
+                logger=self.logger
+            )
+
+            # 3. Re-initialize the Camera, which depends on the generator's dimensions
+            self.camera = Camera(self.config, self.world_generator)
+
+            # 4. Update the bake size estimate label
+            self._update_bake_size_estimate()
+
+            # 5. Trigger a full regeneration of the live preview
+            self.world_params_dirty = True
+
+        except ValueError:
+            self.logger.error("Invalid world size input. Please enter integers only.")
+            # Optionally, reset the text to the current valid values
+            self.world_width_input.set_text(str(self.config['world_generation_parameters']['world_width_chunks']))
+            self.world_height_input.set_text(str(self.config['world_generation_parameters']['world_height_chunks']))
+
+    def _update_bake_size_estimate(self):
+        """Calculates and displays the estimated disk space for a full bake."""
+        if not self.size_estimate_label:
+            return
+
+        w_params = self.config['world_generation_parameters']
+        width_chunks = w_params.get('world_width_chunks', 800)
+        height_chunks = w_params.get('world_height_chunks', 450)
+        
+        total_chunks = width_chunks * height_chunks
+        num_view_modes = len(self.view_modes)
+        
+        total_kb = total_chunks * num_view_modes * ESTIMATED_CHUNK_SIZE_KB
+        total_gb = total_kb / (1024 * 1024)
+
+        self.size_estimate_label.set_text(f"Estimated Bake Size: {total_gb:.2f} GB")
+
+    def _start_background_bake(self):
+        """
+        Saves the current configuration and launches the bake_world.py script
+        as a separate, non-blocking process.
+        """
+        self.logger.info("Bake process requested by user.")
+        
+        # 1. Create a temp directory if it doesn't exist
+        temp_dir = "temp"
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+
+        # 2. Save the current, modified config to a temporary file
+        timestamp = int(time.time())
+        temp_config_path = os.path.join(temp_dir, f"bake_config_{timestamp}.json")
+        
+        with open(temp_config_path, 'w') as f:
+            json.dump(self.config, f, indent=4)
+        
+        self.logger.info(f"Saved temporary bake config to: {temp_config_path}")
+
+        # 3. Launch the baker script as a new process
+        bake_script_path = "bake_world.py"
+        command = [sys.executable, bake_script_path, "--config", temp_config_path]
+        
+        try:
+            subprocess.Popen(command)
+            self.logger.info(f"Successfully launched background bake process: {' '.join(command)}")
+            
+            # 4. Provide UI feedback
+            self.bake_button.set_text("Baking in Progress...")
+            self.bake_button.disable()
+        except FileNotFoundError:
+            self.logger.error(f"Could not find the baker script at '{bake_script_path}'. Is it in the project root?")
+        except Exception as e:
+            self.logger.critical(f"Failed to launch bake process: {e}")
 
     def _update(self):
         """Update application state. Runs the performance test if active."""

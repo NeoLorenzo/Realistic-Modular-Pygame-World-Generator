@@ -10,8 +10,6 @@ WorldGenerator onto a Pygame surface.
 Data Contract:
 ---------------
 - Inputs (on initialization):
-    - generator (WorldGenerator): An initialized WorldGenerator instance.
-    - config (dict): A dictionary of simulation parameters.
     - logger: A configured Python logging object.
 - Inputs (on draw call):
     - screen (pygame.Surface): The target surface to draw on.
@@ -25,15 +23,21 @@ Data Contract:
 
 import pygame
 import logging
-
-# We use a type hint for the generator without creating a circular import
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from world_generator.generator import WorldGenerator
-
 import numpy as np
+
+# Import the generator directly as it will be instantiated on-demand.
+from world_generator.generator import WorldGenerator
 # Import the generator's default config to access simulation-wide constants.
 from world_generator import config as DEFAULTS
+# Import the new shared color mapping utility
+from world_generator import color_maps
+
+# --- Live Preview Constants (Rule 1) ---
+# The resolution of the single surface used for the live preview.
+# Higher values provide more detail at the cost of slower regeneration.
+PREVIEW_RESOLUTION_WIDTH = 1600
+PREVIEW_RESOLUTION_HEIGHT = 900
+
 
 # --- Default Color Mappings ---
 # These are used by the renderer if no other color map is provided.
@@ -61,71 +65,25 @@ COLOR_MAP_HUMIDITY = {
 }
 
 
-import threading
-import queue
-
 class WorldRenderer:
     """
     Handles the visualization of the world data on a Pygame screen.
     """
-    def __init__(self, generator: 'WorldGenerator', logger: logging.Logger):
+    def __init__(self, logger: logging.Logger):
         """
-        Initializes the renderer.
+        Initializes the renderer for Live Preview Mode.
         """
-        self.generator = generator
         self.logger = logger
-        self.logger.info("WorldRenderer initializing...")
+        self.logger.info("WorldRenderer initializing in Live Preview mode...")
 
-        # Load settings directly from the generator instance
-        self.chunk_size = self.generator.settings['chunk_size_cm']
-        self.chunk_resolution = DEFAULTS.CHUNK_RESOLUTION
-        
-        # Load all level and color data
-        self.terrain_levels = DEFAULTS.TERRAIN_LEVELS
-        self.temp_levels = DEFAULTS.TEMP_LEVELS
-        self.color_maps = {
-            "terrain": COLOR_MAP_TERRAIN,
-            "temperature": COLOR_MAP_TEMPERATURE,
-            "humidity": COLOR_MAP_HUMIDITY
-        }
-        
-        # A multi-level cache for different view modes
-        self.chunk_surface_cache = {
-            "terrain": {},
-            "temperature": {},
-            "humidity": {}
-        }
-        self.placeholder_cache = {
-            "terrain": {},
-            "temperature": {},
-            "humidity": {}
-        }
-        self.placeholder_resolution = DEFAULTS.PLACEHOLDER_RESOLUTION
-        
-        # --- Scaled Surface Cache for Memoization (Rule 8 & 11) ---
-        self.scaled_surface_cache = {}
-        self._last_camera_zoom = -1.0 # Used to detect zoom changes
-        self._last_view_mode = None   # Used to detect view mode changes
-        
-        # --- Asynchronous Generation Setup (Rule 8) ---
-        self.generation_request_queue = queue.Queue()
-        self.generation_result_queue = queue.Queue()
-        self.stop_event = threading.Event()
-        self.worker_thread = threading.Thread(target=self._chunk_generator_worker)
-        self.worker_thread.daemon = True
-        self.worker_thread.start()
-        self.pending_requests = set()
-        
         # --- Color Lookup Table (LUT) Generation (Rule 11) ---
-        # Pre-calculate color gradients to replace expensive per-pixel math.
+        # LUTs are now created using the shared utility functions.
         self._color_luts = {
-            "temperature": self._create_temperature_lut(),
-            "humidity": self._create_humidity_lut()
+            "temperature": color_maps.create_temperature_lut(),
+            "humidity": color_maps.create_humidity_lut()
         }
         
         # --- Load Real-World Unit Bounds for Normalization (Rule 3) ---
-        # The renderer needs to know the absolute min/max temperatures the
-        # generator can produce to correctly map them to the color gradient.
         self.min_temp_c = DEFAULTS.MIN_GLOBAL_TEMP_C
         self.max_temp_c = DEFAULTS.MAX_GLOBAL_TEMP_C
         self.temp_range_c = self.max_temp_c - self.min_temp_c
@@ -140,7 +98,7 @@ class WorldRenderer:
             self.logger.warning("Humidity range is zero or negative. Visualization may be incorrect.")
             self.humidity_range_g_m3 = 1.0 # Avoid division by zero
 
-        self.logger.info("WorldRenderer initialized with background worker and color LUTs.")
+        self.logger.info("WorldRenderer initialized for on-demand preview generation.")
 
     def _create_temperature_lut(self) -> np.ndarray:
         """Creates a 256-entry color LUT for the temperature map."""
@@ -243,195 +201,57 @@ class WorldRenderer:
         colors = self._color_luts["humidity"][indices]
         return np.transpose(colors, (1, 0, 2))
 
-    def _perform_chunk_generation(self, chunk_x: int, chunk_y: int, view_mode: str) -> pygame.Surface:
+    # --- All methods related to chunking and async generation have been removed ---
+
+    def generate_live_preview_surface(self, world_params: dict, view_mode: str) -> pygame.Surface:
         """
-        Performs the actual, CPU-intensive work of generating a chunk surface.
-        This method is designed to be called by the background worker thread.
+        Generates a single, complete surface for the entire world at a fixed
+        preview resolution. This is a computationally intensive, on-demand method.
         """
-        wx = np.linspace(chunk_x * self.chunk_size, (chunk_x + 1) * self.chunk_size, self.chunk_resolution)
-        wy = np.linspace(chunk_y * self.chunk_size, (chunk_y + 1) * self.chunk_size, self.chunk_resolution)
+        # 1. Instantiate a WorldGenerator with the provided parameters.
+        #    This ensures the preview is always based on the latest settings.
+        generator = WorldGenerator(config=world_params, logger=self.logger)
+
+        # 2. Create a coordinate grid for the entire world at preview resolution.
+        wx = np.linspace(0, generator.world_width_cm, PREVIEW_RESOLUTION_WIDTH)
+        wy = np.linspace(0, generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
         wx_grid, wy_grid = np.meshgrid(wx, wy)
 
+        # 3. Generate data and color arrays based on the selected view mode.
+        self.logger.debug(f"Generating preview data for '{view_mode}'...")
         if view_mode == "terrain":
-            data = self.generator.get_elevation(wx_grid, wy_grid)
-            color_array = self._get_terrain_color_array(data)
+            elevation_data = generator.get_elevation(wx_grid, wy_grid)
+            color_array = color_maps.get_terrain_color_array(elevation_data)
         elif view_mode == "temperature":
-            data = self.generator.get_temperature(wx_grid, wy_grid)
-            color_array = self._get_temperature_color_array(data)
+            temp_data = generator.get_temperature(wx_grid, wy_grid)
+            color_array = color_maps.get_temperature_color_array(temp_data, self._color_luts["temperature"])
         else: # humidity
-            data = self.generator.get_humidity(wx_grid, wy_grid)
-            color_array = self._get_humidity_color_array(data)
-
+            humidity_data = generator.get_humidity(wx_grid, wy_grid)
+            color_array = color_maps.get_humidity_color_array(humidity_data, self._color_luts["humidity"])
+        
+        # 4. Create and return the final Pygame surface.
         return pygame.surfarray.make_surface(color_array)
 
-    def _chunk_generator_worker(self):
-        """The target function for the background worker thread."""
-        self.logger.info("Chunk generator worker thread started.")
-        while not self.stop_event.is_set():
-            try:
-                # Wait for a request. Timeout allows the thread to check the stop_event.
-                chunk_x, chunk_y, view_mode = self.generation_request_queue.get(timeout=0.1)
-                
-                # This is the same expensive logic as before, but on a background thread.
-                surface = self._perform_chunk_generation(chunk_x, chunk_y, view_mode)
-                
-                # Put the result into the queue for the main thread to pick up.
-                self.generation_result_queue.put(((chunk_x, chunk_y, view_mode), surface))
-
-            except queue.Empty:
-                continue # No requests, loop again.
-        self.logger.info("Chunk generator worker thread stopped.")
-
-    def _process_completed_chunks(self):
-        """Checks the results queue and populates the cache. Runs on the main thread."""
-        while not self.generation_result_queue.empty():
-            (chunk_x, chunk_y, view_mode), surface = self.generation_result_queue.get()
-            chunk_key = (chunk_x, chunk_y)
-            self.chunk_surface_cache[view_mode][chunk_key] = surface
-            # Remove from pending requests once it's in the cache
-            if (chunk_x, chunk_y, view_mode) in self.pending_requests:
-                self.pending_requests.remove((chunk_x, chunk_y, view_mode))
-
-    def _request_chunk_surface(self, chunk_x: int, chunk_y: int, view_mode: str):
-        """Adds a request to the generation queue if not already pending."""
-        request_key = (chunk_x, chunk_y, view_mode)
-        if request_key not in self.pending_requests:
-            self.pending_requests.add(request_key)
-            self.generation_request_queue.put(request_key)
-
-    def shutdown(self):
-        """Signals the worker thread to stop and waits for it to exit."""
-        self.logger.info("Shutting down renderer worker thread...")
-        self.stop_event.set()
-        self.worker_thread.join()
-        self.logger.info("Worker thread joined.")
-
-    def _generate_and_cache_all_placeholders_for_chunk(self, chunk_x: int, chunk_y: int, template_coords: np.ndarray):
+    def draw_live_preview(self, screen: pygame.Surface, camera, preview_surface: pygame.Surface):
         """
-        Generates all placeholder surfaces for a single chunk in one pass,
-        caching and reusing intermediate data (elevation, temperature) to
-        maximize performance.
+        Draws the pre-generated live preview surface to the screen, scaling
+        it according to the camera's pan and zoom. This is a fast operation.
         """
-        chunk_key = (chunk_x, chunk_y)
-        
-        # 1. Generate coordinate grid using a pre-computed template for performance.
-        start_x = chunk_x * self.chunk_size
-        start_y = chunk_y * self.chunk_size
-        wx = start_x + template_coords
-        wy = start_y + template_coords
-        wx_grid, wy_grid = np.meshgrid(wx, wy)
-
-        # 2. Generate Terrain View (and cache elevation data)
-        elevation_data = self.generator.get_elevation(wx_grid, wy_grid)
-        terrain_colors = self._get_terrain_color_array(elevation_data)
-        self.placeholder_cache["terrain"][chunk_key] = pygame.surfarray.make_surface(terrain_colors)
-
-        # 3. Generate Temperature View (REUSING elevation data)
-        temp_data = self.generator.get_temperature(wx_grid, wy_grid, elevation_data=elevation_data)
-        temp_colors = self._get_temperature_color_array(temp_data)
-        self.placeholder_cache["temperature"][chunk_key] = pygame.surfarray.make_surface(temp_colors)
-
-        # 4. Generate Humidity View (REUSING temperature data)
-        humidity_data = self.generator.get_humidity(wx_grid, wy_grid, temperature_data_c=temp_data)
-        humidity_colors = self._get_humidity_color_array(humidity_data)
-        self.placeholder_cache["humidity"][chunk_key] = pygame.surfarray.make_surface(humidity_colors)
-
-    def get_visible_chunks(self, camera, buffer: int = 0) -> list:
-        """Helper to calculate visible chunks, with an optional buffer."""
-        # Calculate the world coordinates for the corners of the buffered view
-        top_left_wx, top_left_wy = camera.screen_to_world(-buffer * self.chunk_size, -buffer * self.chunk_size)
-        bottom_right_wx, bottom_right_wy = camera.screen_to_world(
-            camera.screen_width + buffer * self.chunk_size, 
-            camera.screen_height + buffer * self.chunk_size
-        )
-        
-        start_x = int(top_left_wx // self.chunk_size)
-        end_x = int(bottom_right_wx // self.chunk_size)
-        start_y = int(top_left_wy // self.chunk_size)
-        end_y = int(bottom_right_wy // self.chunk_size)
-        
-        return [(cx, cy) for cx in range(start_x, end_x + 1) for cy in range(start_y, end_y + 1)]
-
-    def prepare_entire_world(self):
-        """
-        Generator that prepares placeholders for ALL view modes using an optimized
-        chunk-centric approach. Yields progress for the UI loading bar.
-        """
-        world_width = self.generator.settings['world_width_chunks']
-        world_height = self.generator.settings['world_height_chunks']
-        total_chunks = world_width * world_height
-        
-        if total_chunks == 0:
-            yield 100.0, "Preparation complete"
-            return
-
-        # Pre-compute a template array to avoid millions of linspace calls.
-        template_coords = np.linspace(0, self.chunk_size, self.placeholder_resolution)
-
-        status_message = "Generating world maps..."
-        chunks_processed = 0
-        
-        for cy in range(world_height):
-            for cx in range(world_width):
-                chunk_key = (cx, cy)
-                # Only generate if the chunk is missing from ANY of the caches.
-                # We assume if one is missing, they all are.
-                if chunk_key not in self.placeholder_cache["terrain"]:
-                    self._generate_and_cache_all_placeholders_for_chunk(cx, cy, template_coords)
-                
-                chunks_processed += 1
-                overall_progress = (chunks_processed / total_chunks) * 100
-                yield overall_progress, status_message
-
-    def draw(self, screen: pygame.Surface, camera, view_mode: str, high_res_zoom_threshold: float):
-        """Draws the visible world and intelligently pre-caches chunks."""
-        self._process_completed_chunks()
         screen.fill((10, 0, 20))
+        if preview_surface is None:
+            return # Don't draw if the surface hasn't been generated yet.
 
-        world_width = self.generator.settings['world_width_chunks']
-        world_height = self.generator.settings['world_height_chunks']
+        # 1. Calculate the scaled size of the entire world based on camera zoom.
+        #    Ensure size is at least 1x1 pixel to avoid errors.
+        scaled_width = max(1, int(camera.world_width * camera.zoom))
+        scaled_height = max(1, int(camera.world_height * camera.zoom))
 
-        # --- 1. Smart Pre-caching: Only request high-res chunks when zoomed in ---
-        if camera.zoom >= high_res_zoom_threshold:
-            chunks_to_request = self.get_visible_chunks(camera, buffer=2)
-            for cx, cy in chunks_to_request:
-                if 0 <= cx < world_width and 0 <= cy < world_height:
-                    self._request_chunk_surface(cx, cy, view_mode)
+        # 2. Scale the preview surface to the calculated size.
+        #    For performance, this could be cached, but we will address that later if needed.
+        scaled_surface = pygame.transform.scale(preview_surface, (scaled_width, scaled_height))
 
-        # --- 2. Draw: Render only the chunks currently on screen ---
-        visible_chunks = self.get_visible_chunks(camera, buffer=0)
-        high_res_cache = self.chunk_surface_cache[view_mode]
-        placeholder_cache = self.placeholder_cache[view_mode]
+        # 3. Get the on-screen position of the world's top-left corner (0, 0).
+        top_left_pos = camera.world_to_screen(0, 0)
 
-        for cx, cy in visible_chunks:
-            if not (0 <= cx < world_width and 0 <= cy < world_height):
-                continue
-
-            chunk_key = (cx, cy)
-            # Use the high-res version if available, otherwise fall back to the placeholder.
-            surface_to_draw = high_res_cache.get(chunk_key) or placeholder_cache.get(chunk_key)
-
-            if surface_to_draw is None:
-                # This is a safety net. Due to the initial load and pre-caching,
-                # this should almost never be needed during gameplay.
-                surface_to_draw = self._generate_placeholder_surface(cx, cy, view_mode)
-                placeholder_cache[chunk_key] = surface_to_draw
-            
-            # --- Scaling and Drawing Logic (Unchanged) ---
-            scaled_size = int(self.chunk_size * camera.zoom) + 2
-            if scaled_size < 1:
-                continue
-
-            # Invalidate the scaled surface cache if zoom OR view mode has changed.
-            if camera.zoom != self._last_camera_zoom or view_mode != self._last_view_mode:
-                self.scaled_surface_cache.clear()
-                self._last_camera_zoom = camera.zoom
-                self._last_view_mode = view_mode
-
-            scaled_surface = self.scaled_surface_cache.get(chunk_key)
-            if scaled_surface is None:
-                scaled_surface = pygame.transform.scale(surface_to_draw, (scaled_size, scaled_size))
-                self.scaled_surface_cache[chunk_key] = scaled_surface
-
-            chunk_screen_pos = camera.world_to_screen(cx * self.chunk_size, cy * self.chunk_size)
-            screen.blit(scaled_surface, chunk_screen_pos)
+        # 4. Blit the scaled world surface to the screen.
+        screen.blit(scaled_surface, top_left_pos)

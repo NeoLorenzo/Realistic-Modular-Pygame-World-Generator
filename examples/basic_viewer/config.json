@@ -1,6 +1,6 @@
 {
     "benchmark": {
-        "enabled": true,
+        "enabled": false,
         "headless": false
     },
     "display": {
