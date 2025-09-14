@@ -50,9 +50,9 @@ TERRAIN_AMPLITUDE = 2.5
 TERRAIN_LEVELS = {
     "water": 0.1,
     "sand": 0.11,
-    "grass": 0.13,
-    "dirt": 0.3,
-    "mountain": 0.5 # The rest is mountain
+    "grass": 0.18,
+    "dirt": 0.19,
+    "mountain": 1.0 # The rest is mountain
 }
 
 # --- Temperature Levels (Normalized 0.0 to 1.0) ---
@@ -64,9 +64,46 @@ TEMP_LEVELS = {
     "hottest": 1.0
 }
 
+# --- Climate Physics Abstractions (Rule 8) ---
+# These constants control the temperature model using real-world units (Celsius).
+
+# The absolute coldest and hottest temperatures the simulation can produce.
+# These are used by the renderer to normalize the color map.
+MIN_GLOBAL_TEMP_C = -50.0
+MAX_GLOBAL_TEMP_C = 50.0
+
+# The "thermostat" setting for the world. This is the target average
+# temperature at sea level (elevation 0.1). Earth's average is ~15°C.
+TARGET_SEA_LEVEL_TEMP_C = 15.0
+
+# Controls the temperature swing from the target average based on noise.
+# A value of 30 means the sea-level temperature can vary by +/- 15°C.
+SEASONAL_VARIATION_C = 30.0
+
+# The temperature drop in Celsius for a 1.0 change in elevation.
+# A value of 40 means the highest peaks (elevation 1.0) will be 40°C
+# colder than they would be at sea level.
+LAPSE_RATE_C_PER_UNIT_ELEVATION = 40.0
+
+
+# --- Humidity Realism Constants (Rule 3 & 8) ---
+
+# Resolution factor for the pre-computed distance-to-water map.
+# 0.1 means the map is 1/10th the resolution of a normal chunk.
+DISTANCE_MAP_RESOLUTION_FACTOR = 0.1
+
+# The maximum distance (in km) from a water source that influences humidity.
+# Beyond this distance, the land is considered fully arid.
+MAX_COASTAL_DISTANCE_KM = 150.0
+
+# The absolute min/max humidity in grams of water per cubic meter of air.
+# Used for the real-world model and for renderer normalization.
+MIN_ABSOLUTE_HUMIDITY_G_M3 = 0.1
+MAX_ABSOLUTE_HUMIDITY_G_M3 = 30.0
+
 # --- Rendering & Performance ---
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture
 PLACEHOLDER_RESOLUTION = 16 # Lower-res version for instant previews (Rule 8)
 CHUNK_SIZE_CM = 10000   # 100m = 10,000 cm. This is the core unit.
-DEFAULT_WORLD_WIDTH_CHUNKS = 400
-DEFAULT_WORLD_HEIGHT_CHUNKS = 275
+DEFAULT_WORLD_WIDTH_CHUNKS = 200
+DEFAULT_WORLD_HEIGHT_CHUNKS = 150

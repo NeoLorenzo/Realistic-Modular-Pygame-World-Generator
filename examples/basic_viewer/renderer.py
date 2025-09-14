@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from world_generator.generator import WorldGenerator
 
 import numpy as np
+# Import the generator's default config to access simulation-wide constants.
 from world_generator import config as DEFAULTS
 
 # --- Default Color Mappings ---
@@ -121,6 +122,23 @@ class WorldRenderer:
             "temperature": self._create_temperature_lut(),
             "humidity": self._create_humidity_lut()
         }
+        
+        # --- Load Real-World Unit Bounds for Normalization (Rule 3) ---
+        # The renderer needs to know the absolute min/max temperatures the
+        # generator can produce to correctly map them to the color gradient.
+        self.min_temp_c = DEFAULTS.MIN_GLOBAL_TEMP_C
+        self.max_temp_c = DEFAULTS.MAX_GLOBAL_TEMP_C
+        self.temp_range_c = self.max_temp_c - self.min_temp_c
+        if self.temp_range_c <= 0:
+            self.logger.warning("Temperature range is zero or negative. Visualization may be incorrect.")
+            self.temp_range_c = 1.0 # Avoid division by zero
+
+        self.min_humidity_g_m3 = DEFAULTS.MIN_ABSOLUTE_HUMIDITY_G_M3
+        self.max_humidity_g_m3 = DEFAULTS.MAX_ABSOLUTE_HUMIDITY_G_M3
+        self.humidity_range_g_m3 = self.max_humidity_g_m3 - self.min_humidity_g_m3
+        if self.humidity_range_g_m3 <= 0:
+            self.logger.warning("Humidity range is zero or negative. Visualization may be incorrect.")
+            self.humidity_range_g_m3 = 1.0 # Avoid division by zero
 
         self.logger.info("WorldRenderer initialized with background worker and color LUTs.")
 
@@ -174,16 +192,32 @@ class WorldRenderer:
         return np.transpose(colors, (1, 0, 2))
 
     def _get_temperature_color_array(self, temp_values: np.ndarray) -> np.ndarray:
-        """Converts an array of temperature data into an RGB color array using a LUT."""
-        # Scale the [0, 1] float values to [0, 255] integer indices
-        indices = (temp_values * 255).astype(np.uint8)
-        # Use the indices to look up the pre-calculated colors
+        """
+        Converts an array of Celsius temperature data into an RGB color array.
+        It first normalizes the Celsius values to the [0, 1] range.
+        """
+        # 1. Normalize the incoming Celsius data to the [0, 1] range.
+        normalized_temp = (temp_values - self.min_temp_c) / self.temp_range_c
+        
+        # 2. Scale the normalized [0, 1] float values to [0, 255] integer indices for the LUT.
+        indices = (normalized_temp * 255).astype(np.uint8)
+        
+        # 3. Use the indices to look up the pre-calculated colors.
         colors = self._color_luts["temperature"][indices]
         return np.transpose(colors, (1, 0, 2))
 
     def _get_humidity_color_array(self, humidity_values: np.ndarray) -> np.ndarray:
-        """Converts an array of humidity data into an RGB color array using a LUT."""
-        indices = (humidity_values * 255).astype(np.uint8)
+        """
+        Converts an array of absolute humidity data (g/m³) into an RGB color array.
+        It first normalizes the g/m³ values to the [0, 1] range.
+        """
+        # 1. Normalize the incoming g/m³ data to the [0, 1] range.
+        normalized_humidity = (humidity_values - self.min_humidity_g_m3) / self.humidity_range_g_m3
+
+        # 2. Scale the normalized [0, 1] float values to [0, 255] integer indices for the LUT.
+        indices = (normalized_humidity * 255).astype(np.uint8)
+
+        # 3. Use the indices to look up the pre-calculated colors.
         colors = self._color_luts["humidity"][indices]
         return np.transpose(colors, (1, 0, 2))
 

@@ -223,30 +223,36 @@ class Application:
 
     def run(self):
         """The main application loop."""
-        # Enable the profiler at the very start to capture all execution paths.
-        if self.profiler:
-            self.profiler.enable()
+        # Profiler is now enabled conditionally based on the run mode.
 
         # --- Benchmark Mode Execution (Rule 11) ---
         if self.is_benchmark_running:
             import time
             self.logger.info("Benchmark mode ENABLED. Application will exit after generation.")
             
+            # Profile ONLY the loading screen.
+            if self.profiler:
+                self.profiler.enable()
+
             start_time = time.perf_counter()
-            # Run the generation process. The loading bar will be displayed as normal.
             self._perform_initial_generation()
             end_time = time.perf_counter()
             
+            if self.profiler:
+                self.profiler.disable() # Disable immediately to isolate the measurement.
+
             duration = end_time - start_time
             self.logger.info(f"Benchmark complete. Placeholder generation took: {duration:.3f} seconds.")
             
-            # Set is_running to false to allow the finally block to execute
-            # and perform a clean shutdown without ever entering the main loop.
             self.is_running = False
         else:
-            # Run the standard loading method once before the game becomes interactive.
+            # In normal mode, do NOT profile the loading screen.
             self._perform_initial_generation()
             self.logger.info("Entering main loop.")
+            
+            # Profile ONLY the interactive session.
+            if self.profiler:
+                self.profiler.enable()
 
         try:
             while self.is_running:
@@ -266,6 +272,8 @@ class Application:
         except Exception as e:
             self.logger.critical("An unhandled exception occurred!", exc_info=True)
         finally:
+            # The profiler is disabled here for the normal run case.
+            # For the benchmark case, it's already disabled, but this call is safe.
             if self.profiler:
                 self.profiler.disable()
                 self._report_profiling_results()

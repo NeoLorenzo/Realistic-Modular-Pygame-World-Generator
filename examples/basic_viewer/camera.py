@@ -16,13 +16,15 @@ class Camera:
         self.screen_width = config['display']['screen_width']
         self.screen_height = config['display']['screen_height']
         
-        self.x = self.world_width / 2
-        self.y = self.world_height / 2
-        self.zoom = 1.0
-        
+        # First, load all values from the config into instance attributes.
         self.zoom_speed = config['camera']['zoom_speed']
         self.max_zoom = config['camera']['max_zoom']
         self.min_zoom = config['camera']['min_zoom']
+
+        # Now, use the loaded attributes to set the initial state.
+        self.x = self.world_width / 2
+        self.y = self.world_height / 2
+        self.zoom = self.min_zoom
 
         self.zoom_changed = True
 
