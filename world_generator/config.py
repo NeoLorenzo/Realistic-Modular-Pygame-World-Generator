@@ -85,6 +85,14 @@ SEASONAL_VARIATION_C = 30.0
 # colder than they would be at sea level.
 LAPSE_RATE_C_PER_UNIT_ELEVATION = 40.0
 
+# The total temperature reduction in Celsius applied at the poles.
+# This creates the equator-to-pole temperature gradient.
+POLAR_TEMPERATURE_DROP_C = 30.0
+
+# The vertical position of the equator as a factor of world height (0.0=bottom, 1.0=top).
+# 0.5 is the default, placing it in the middle.
+EQUATOR_Y_POS_FACTOR = 0.5
+
 
 # --- Humidity Realism Constants (Rule 3 & 8) ---
 
@@ -105,5 +113,5 @@ MAX_ABSOLUTE_HUMIDITY_G_M3 = 30.0
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture
 PLACEHOLDER_RESOLUTION = 16 # Lower-res version for instant previews (Rule 8)
 CHUNK_SIZE_CM = 10000   # 100m = 10,000 cm. This is the core unit.
-DEFAULT_WORLD_WIDTH_CHUNKS = 200
-DEFAULT_WORLD_HEIGHT_CHUNKS = 150
+DEFAULT_WORLD_WIDTH_CHUNKS = 400
+DEFAULT_WORLD_HEIGHT_CHUNKS = 275

@@ -74,6 +74,8 @@ class WorldGenerator:
             'target_sea_level_temp_c': self.user_config.get('target_sea_level_temp_c', DEFAULTS.TARGET_SEA_LEVEL_TEMP_C),
             'seasonal_variation_c': self.user_config.get('seasonal_variation_c', DEFAULTS.SEASONAL_VARIATION_C),
             'lapse_rate_c_per_unit_elevation': self.user_config.get('lapse_rate_c_per_unit_elevation', DEFAULTS.LAPSE_RATE_C_PER_UNIT_ELEVATION),
+            'polar_temperature_drop_c': self.user_config.get('polar_temperature_drop_c', DEFAULTS.POLAR_TEMPERATURE_DROP_C),
+            'equator_y_pos_factor': self.user_config.get('equator_y_pos_factor', DEFAULTS.EQUATOR_Y_POS_FACTOR),
             'terrain_levels': self.user_config.get('terrain_levels', DEFAULTS.TERRAIN_LEVELS),
             'distance_map_resolution_factor': self.user_config.get('distance_map_resolution_factor', DEFAULTS.DISTANCE_MAP_RESOLUTION_FACTOR),
             'max_coastal_distance_km': self.user_config.get('max_coastal_distance_km', DEFAULTS.MAX_COASTAL_DISTANCE_KM),
@@ -189,10 +191,13 @@ class WorldGenerator:
             scale=self.settings['climate_noise_scale']
         )
 
-        # 2. Calculate the sea-level temperature in Celsius. This centers the
-        #    temperature variation around the target "thermostat" setting.
+        # 2. Calculate the sea-level temperature in Celsius. This is re-calibrated
+        #    to ensure the 'target_sea_level_temp_c' remains the true global average.
+        #    We add half of the polar drop to the base to compensate for the
+        #    average reduction that will be applied across the globe.
+        average_latitude_offset = self.settings['polar_temperature_drop_c'] / 2.0
         sea_level_temp_c = (
-            self.settings['target_sea_level_temp_c'] +
+            self.settings['target_sea_level_temp_c'] + average_latitude_offset +
             (noise - 0.5) * self.settings['seasonal_variation_c']
         )
 
@@ -202,10 +207,29 @@ class WorldGenerator:
         # 4. Calculate the temperature drop due to altitude in Celsius.
         altitude_drop_c = elevation * self.settings['lapse_rate_c_per_unit_elevation']
 
-        # 5. Calculate the final temperature by applying the altitude drop.
+        # 5. Calculate the temperature after altitude adjustment.
         final_temp_c = sea_level_temp_c - altitude_drop_c
 
-        # 6. Clamp the result to the simulation's absolute min/max bounds.
+        # 6. NEW: Apply latitudinal temperature gradient (equator-to-pole effect).
+        # This is a critical step for global realism.
+        equator_y_cm = self.world_height_cm * self.settings['equator_y_pos_factor']
+        pole_dist_cm = self.world_height_cm * (1.0 - self.settings['equator_y_pos_factor'])
+        
+        dist_from_equator_cm = np.abs(y_coords - equator_y_cm)
+        
+        # Normalize distance to [0, 1], where 0 is the equator and 1 is a pole.
+        # We use a safe division to avoid errors if pole_dist_cm is zero.
+        normalized_polar_dist = np.divide(
+            dist_from_equator_cm,
+            pole_dist_cm,
+            out=np.zeros_like(dist_from_equator_cm, dtype=float),
+            where=pole_dist_cm!=0
+        )
+        
+        latitude_drop_c = normalized_polar_dist * self.settings['polar_temperature_drop_c']
+        final_temp_c -= latitude_drop_c
+
+        # 7. Clamp the result to the simulation's absolute min/max bounds.
         return np.clip(
             final_temp_c,
             self.settings['min_global_temp_c'],
