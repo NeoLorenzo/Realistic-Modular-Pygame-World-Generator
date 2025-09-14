@@ -184,18 +184,23 @@ class Application:
         
         # The renderer's prepare method is now a generator we can loop over.
         for progress, status in self.world_renderer.prepare_entire_world():
+            # --- Throttling Logic (Rule 2.4) ---
+            # We now check the time BEFORE processing events or drawing.
+            # This ensures the main thread focuses on generation and only pauses
+            # to update the UI at a fixed interval.
+            current_time = time.perf_counter()
+            if current_time - last_update_time < target_frame_duration:
+                continue # Skip UI update and event handling for this chunk
+
+            # --- If enough time has passed, update the UI ---
+            last_update_time = current_time
+
             # Abort if user quits during loading
             for event in pygame.event.get():
                 if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                     self.is_running = False
                     # Cleanly exit the generator loop
                     return
-
-            # --- Throttling Logic (Rule 11) ---
-            current_time = time.perf_counter()
-            if current_time - last_update_time < target_frame_duration:
-                continue # Skip drawing this frame
-            last_update_time = current_time
 
             # --- Drawing Logic ---
             self.screen.fill(bg_color)

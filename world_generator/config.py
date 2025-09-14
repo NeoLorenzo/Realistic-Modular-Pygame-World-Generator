@@ -50,8 +50,8 @@ TERRAIN_AMPLITUDE = 2.5
 TERRAIN_LEVELS = {
     "water": 0.1,
     "sand": 0.11,
-    "grass": 0.18,
-    "dirt": 0.19,
+    "grass": 0.38,
+    "dirt": 0.49,
     "mountain": 1.0 # The rest is mountain
 }
 
@@ -111,7 +111,7 @@ MAX_ABSOLUTE_HUMIDITY_G_M3 = 30.0
 
 # --- Rendering & Performance ---
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture
-PLACEHOLDER_RESOLUTION = 16 # Lower-res version for instant previews (Rule 8)
+PLACEHOLDER_RESOLUTION = 8 # Lower-res version for instant previews (Rule 8)
 CHUNK_SIZE_CM = 10000   # 100m = 10,000 cm. This is the core unit.
-DEFAULT_WORLD_WIDTH_CHUNKS = 400
-DEFAULT_WORLD_HEIGHT_CHUNKS = 275
+DEFAULT_WORLD_WIDTH_CHUNKS = 800
+DEFAULT_WORLD_HEIGHT_CHUNKS = 450

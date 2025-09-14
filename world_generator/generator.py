@@ -179,10 +179,11 @@ class WorldGenerator:
         # Normalize values to range [0, 1]
         return (noise_values + 1) / 2
 
-    def get_temperature(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+    def get_temperature(self, x_coords: np.ndarray, y_coords: np.ndarray, elevation_data: np.ndarray = None) -> np.ndarray:
         """
         Generates temperature data in Celsius using a real-world model.
         The final output is an array of Celsius values, NOT normalized data.
+        Can accept pre-computed elevation_data to avoid recalculation.
         """
         # 1. Generate base noise [0, 1] for temperature variation.
         noise = self._generate_base_noise(
@@ -202,10 +203,12 @@ class WorldGenerator:
         )
 
         # 3. Get the corresponding elevation data [0, 1].
-        elevation = self.get_elevation(x_coords, y_coords)
+        #    If elevation_data is not provided, calculate it. Otherwise, use the cached version.
+        if elevation_data is None:
+            elevation_data = self.get_elevation(x_coords, y_coords)
 
         # 4. Calculate the temperature drop due to altitude in Celsius.
-        altitude_drop_c = elevation * self.settings['lapse_rate_c_per_unit_elevation']
+        altitude_drop_c = elevation_data * self.settings['lapse_rate_c_per_unit_elevation']
 
         # 5. Calculate the temperature after altitude adjustment.
         final_temp_c = sea_level_temp_c - altitude_drop_c
@@ -294,13 +297,18 @@ class WorldGenerator:
         # Return the distance values from the map.
         return self._distance_map[map_y, map_x]
 
-    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray, temperature_data_c: np.ndarray = None) -> np.ndarray:
         """
         Generates absolute humidity (g/m³) using a realistic model based on
         temperature, distance from water, and local noise.
+        Can accept pre-computed temperature_data_c to avoid recalculation.
         """
         # 1. Get temperature in Celsius, as it's the primary driver of humidity.
-        temperature_c = self.get_temperature(x_coords, y_coords)
+        #    If temperature_data_c is not provided, calculate it. Otherwise, use the cached version.
+        if temperature_data_c is None:
+            temperature_c = self.get_temperature(x_coords, y_coords)
+        else:
+            temperature_c = temperature_data_c
 
         # 2. Calculate saturation humidity (max possible g/m³) based on temperature.
         #    This is a simplified scientific abstraction (Rule 8) of the

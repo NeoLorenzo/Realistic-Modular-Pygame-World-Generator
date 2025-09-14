@@ -168,27 +168,49 @@ class WorldRenderer:
         return colors.astype(np.uint8)
 
     def _get_terrain_color_array(self, elevation_values: np.ndarray) -> np.ndarray:
-        """Converts an array of elevation data into an RGB color array."""
-        colors = np.zeros((*elevation_values.shape, 3), dtype=np.uint8)
+        """
+        Converts an array of elevation data into an RGB color array using a
+        highly optimized lookup table approach with np.digitize.
+        """
         color_map = self.color_maps["terrain"]
-        
-        water_mask = elevation_values < self.terrain_levels["water"]
-        sand_mask = (elevation_values >= self.terrain_levels["water"]) & (elevation_values < self.terrain_levels["sand"])
-        grass_mask = (elevation_values >= self.terrain_levels["sand"]) & (elevation_values < self.terrain_levels["grass"])
-        dirt_mask = (elevation_values >= self.terrain_levels["grass"]) & (elevation_values < self.terrain_levels["dirt"])
-        mountain_mask = elevation_values >= self.terrain_levels["dirt"]
+        levels = self.terrain_levels
 
+        # 1. Define the elevation boundaries (bins) for categorization.
+        bins = [
+            levels["water"],
+            levels["sand"],
+            levels["grass"],
+            levels["dirt"]
+        ]
+
+        # 2. Define a corresponding color lookup table. The order MUST match the bins.
+        #    We use shallow_water as the default for the water bin (index 0).
+        color_lookup = np.array([
+            color_map["shallow_water"],
+            color_map["sand"],
+            color_map["grass"],
+            color_map["dirt"],
+            color_map["mountain"]  # The color for values > the last bin.
+        ], dtype=np.uint8)
+
+        # 3. Use np.digitize to create an array of indices (0, 1, 2, 3, 4).
+        #    This is extremely fast and replaces all boolean masking.
+        indices = np.digitize(elevation_values, bins=bins)
+
+        # 4. Use the indices to create the color array in a single, fast operation.
+        colors = color_lookup[indices]
+
+        # 5. Handle the special-case water gradient separately.
+        #    This is still much faster as it only operates on a small subset of data.
+        water_mask = indices == 0
         if np.any(water_mask):
-            t = (elevation_values[water_mask] / self.terrain_levels["water"])[..., np.newaxis]
+            # Calculate the interpolation factor 't' only for water pixels.
+            t = (elevation_values[water_mask] / levels["water"])[..., np.newaxis]
             c1 = np.array(color_map["deep_water"])
             c2 = np.array(color_map["shallow_water"])
-            colors[water_mask] = (1 - t) * c1 + t * c2
-            
-        colors[sand_mask] = color_map["sand"]
-        colors[grass_mask] = color_map["grass"]
-        colors[dirt_mask] = color_map["dirt"]
-        colors[mountain_mask] = color_map["mountain"]
-        
+            # Apply the gradient and update the colors array in place.
+            colors[water_mask] = ((1 - t) * c1 + t * c2).astype(np.uint8)
+
         return np.transpose(colors, (1, 0, 2))
 
     def _get_temperature_color_array(self, temp_values: np.ndarray) -> np.ndarray:
@@ -284,29 +306,35 @@ class WorldRenderer:
         self.worker_thread.join()
         self.logger.info("Worker thread joined.")
 
-    def _generate_placeholder_surface(self, chunk_x: int, chunk_y: int, view_mode: str) -> pygame.Surface:
+    def _generate_and_cache_all_placeholders_for_chunk(self, chunk_x: int, chunk_y: int, template_coords: np.ndarray):
         """
-        Generates a very low-resolution placeholder surface synchronously.
-        This is designed to be fast enough to run on the main thread without stuttering.
+        Generates all placeholder surfaces for a single chunk in one pass,
+        caching and reusing intermediate data (elevation, temperature) to
+        maximize performance.
         """
-        wx = np.linspace(chunk_x * self.chunk_size, (chunk_x + 1) * self.chunk_size, self.placeholder_resolution)
-        wy = np.linspace(chunk_y * self.chunk_size, (chunk_y + 1) * self.chunk_size, self.placeholder_resolution)
+        chunk_key = (chunk_x, chunk_y)
+        
+        # 1. Generate coordinate grid using a pre-computed template for performance.
+        start_x = chunk_x * self.chunk_size
+        start_y = chunk_y * self.chunk_size
+        wx = start_x + template_coords
+        wy = start_y + template_coords
         wx_grid, wy_grid = np.meshgrid(wx, wy)
 
-        if view_mode == "terrain":
-            data = self.generator.get_elevation(wx_grid, wy_grid)
-            color_array = self._get_terrain_color_array(data)
-        elif view_mode == "temperature":
-            data = self.generator.get_temperature(wx_grid, wy_grid)
-            color_array = self._get_temperature_color_array(data)
-        else: # humidity
-            data = self.generator.get_humidity(wx_grid, wy_grid)
-            color_array = self._get_humidity_color_array(data)
+        # 2. Generate Terrain View (and cache elevation data)
+        elevation_data = self.generator.get_elevation(wx_grid, wy_grid)
+        terrain_colors = self._get_terrain_color_array(elevation_data)
+        self.placeholder_cache["terrain"][chunk_key] = pygame.surfarray.make_surface(terrain_colors)
 
-        surface = pygame.surfarray.make_surface(color_array)
-        # Cache the result so we only generate this once
-        self.placeholder_cache[view_mode][(chunk_x, chunk_y)] = surface
-        return surface
+        # 3. Generate Temperature View (REUSING elevation data)
+        temp_data = self.generator.get_temperature(wx_grid, wy_grid, elevation_data=elevation_data)
+        temp_colors = self._get_temperature_color_array(temp_data)
+        self.placeholder_cache["temperature"][chunk_key] = pygame.surfarray.make_surface(temp_colors)
+
+        # 4. Generate Humidity View (REUSING temperature data)
+        humidity_data = self.generator.get_humidity(wx_grid, wy_grid, temperature_data_c=temp_data)
+        humidity_colors = self._get_humidity_color_array(humidity_data)
+        self.placeholder_cache["humidity"][chunk_key] = pygame.surfarray.make_surface(humidity_colors)
 
     def get_visible_chunks(self, camera, buffer: int = 0) -> list:
         """Helper to calculate visible chunks, with an optional buffer."""
@@ -326,46 +354,34 @@ class WorldRenderer:
 
     def prepare_entire_world(self):
         """
-        Generator that prepares placeholders for ALL view modes, yielding progress.
-        This allows the UI to draw an accurate, multi-stage loading bar.
+        Generator that prepares placeholders for ALL view modes using an optimized
+        chunk-centric approach. Yields progress for the UI loading bar.
         """
         world_width = self.generator.settings['world_width_chunks']
         world_height = self.generator.settings['world_height_chunks']
+        total_chunks = world_width * world_height
         
-        view_modes_to_prepare = list(self.color_maps.keys())
-        num_stages = len(view_modes_to_prepare)
-        total_chunks_per_stage = world_width * world_height
-        
-        if total_chunks_per_stage == 0:
+        if total_chunks == 0:
             yield 100.0, "Preparation complete"
             return
 
-        for i, view_mode in enumerate(view_modes_to_prepare):
-            status_message = f"Preparing {view_mode} maps..."
-            
-            # Skip if this view mode has already been fully cached
-            if len(self.placeholder_cache[view_mode]) == total_chunks_per_stage:
-                # Yield progress for this completed stage
-                for j in range(total_chunks_per_stage):
-                    overall_progress = ((i * total_chunks_per_stage + j + 1) / (num_stages * total_chunks_per_stage)) * 100
-                    yield overall_progress, status_message
-                continue
+        # Pre-compute a template array to avoid millions of linspace calls.
+        template_coords = np.linspace(0, self.chunk_size, self.placeholder_resolution)
 
-            for cy in range(world_height):
-                for cx in range(world_width):
-                    chunk_key = (cx, cy)
-                    if chunk_key not in self.placeholder_cache[view_mode]:
-                        surface = self._generate_placeholder_surface(cx, cy, view_mode)
-                        self.placeholder_cache[view_mode][chunk_key] = surface
-                    
-                    # Calculate and yield overall progress
-                    chunks_done_this_stage = (cy * world_width) + cx
-                    chunks_done_previous_stages = i * total_chunks_per_stage
-                    total_chunks_done = chunks_done_previous_stages + chunks_done_this_stage
-                    total_work = num_stages * total_chunks_per_stage
-                    
-                    overall_progress = (total_chunks_done / total_work) * 100
-                    yield overall_progress, status_message
+        status_message = "Generating world maps..."
+        chunks_processed = 0
+        
+        for cy in range(world_height):
+            for cx in range(world_width):
+                chunk_key = (cx, cy)
+                # Only generate if the chunk is missing from ANY of the caches.
+                # We assume if one is missing, they all are.
+                if chunk_key not in self.placeholder_cache["terrain"]:
+                    self._generate_and_cache_all_placeholders_for_chunk(cx, cy, template_coords)
+                
+                chunks_processed += 1
+                overall_progress = (chunks_processed / total_chunks) * 100
+                yield overall_progress, status_message
 
     def draw(self, screen: pygame.Surface, camera, view_mode: str, high_res_zoom_threshold: float):
         """Draws the visible world and intelligently pre-caches chunks."""
