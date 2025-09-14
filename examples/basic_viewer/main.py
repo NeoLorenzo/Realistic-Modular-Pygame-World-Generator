@@ -47,6 +47,11 @@ class Application:
         # --- Performance Test State (Rule 11) ---
         self.perf_test_config = self.config.get('performance_test', {})
         self.is_perf_test_running = self.perf_test_config.get('enabled', False)
+        
+        # --- Benchmark Mode State ---
+        self.benchmark_config = self.config.get('benchmark', {})
+        self.is_benchmark_running = self.benchmark_config.get('enabled', False)
+
         self._perf_test_path = []
         self._perf_test_current_action = None
         self._perf_test_action_frame_count = 0
@@ -156,31 +161,94 @@ class Application:
         self.logger.info("Pygame initialized successfully.")
 
     def _perform_initial_generation(self):
-        """Displays a loading message and generates placeholders for the ENTIRE world."""
+        """Displays a hyper-accurate loading bar while generating all world placeholders."""
         self.logger.info("Starting placeholder generation for the entire world...")
+
+        # --- UI Element Setup ---
+        font_status = pygame.font.Font(None, 48)
+        font_percent = pygame.font.Font(None, 40)
+        text_color = (220, 220, 220)
+        bar_color = (60, 180, 80)
+        bg_color = (10, 0, 20)
+        bar_border_color = (150, 150, 150)
+
+        bar_width = self.screen_width * 0.6
+        bar_height = 50
+        bar_x = (self.screen_width - bar_width) / 2
+        bar_y = (self.screen_height - bar_height) / 2
+
+        # --- Generation Loop ---
+        import time
+        target_frame_duration = 1.0 / 60.0  # Target 60 FPS for UI updates
+        last_update_time = 0
         
-        font = pygame.font.Font(None, 48)
-        text = font.render("Generating world, please wait...", True, (200, 200, 200))
-        text_rect = text.get_rect(center=(self.screen_width / 2, self.screen_height / 2))
+        # The renderer's prepare method is now a generator we can loop over.
+        for progress, status in self.world_renderer.prepare_entire_world():
+            # Abort if user quits during loading
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                    self.is_running = False
+                    # Cleanly exit the generator loop
+                    return
 
-        self.screen.fill((10, 0, 20))
-        self.screen.blit(text, text_rect)
-        pygame.display.flip()
+            # --- Throttling Logic (Rule 11) ---
+            current_time = time.perf_counter()
+            if current_time - last_update_time < target_frame_duration:
+                continue # Skip drawing this frame
+            last_update_time = current_time
 
-        # Ask the renderer to generate and cache placeholders for the whole map.
-        self.world_renderer.prepare_entire_world(self.view_mode)
+            # --- Drawing Logic ---
+            self.screen.fill(bg_color)
+
+            # Status Text (e.g., "Preparing terrain maps...")
+            status_text_surf = font_status.render(status, True, text_color)
+            status_text_rect = status_text_surf.get_rect(center=(self.screen_width / 2, bar_y - 50))
+            self.screen.blit(status_text_surf, status_text_rect)
+
+            # Loading Bar Background/Border
+            pygame.draw.rect(self.screen, bar_border_color, (bar_x, bar_y, bar_width, bar_height), 2)
+
+            # Loading Bar Fill
+            fill_width = bar_width * (progress / 100.0)
+            pygame.draw.rect(self.screen, bar_color, (bar_x, bar_y, fill_width, bar_height))
+
+            # Percentage Text
+            percent_text_surf = font_percent.render(f"{progress:.1f}%", True, text_color)
+            percent_text_rect = percent_text_surf.get_rect(center=(self.screen_width / 2, bar_y + bar_height / 2))
+            self.screen.blit(percent_text_surf, percent_text_rect)
+
+            pygame.display.flip()
+
         self.logger.info("Entire world placeholder generation complete.")
 
     def run(self):
         """The main application loop."""
-        # Run the new loading method once before the game becomes interactive.
-        self._perform_initial_generation()
+        # Enable the profiler at the very start to capture all execution paths.
+        if self.profiler:
+            self.profiler.enable()
 
-        self.logger.info("Entering main loop.")
+        # --- Benchmark Mode Execution (Rule 11) ---
+        if self.is_benchmark_running:
+            import time
+            self.logger.info("Benchmark mode ENABLED. Application will exit after generation.")
+            
+            start_time = time.perf_counter()
+            # Run the generation process. The loading bar will be displayed as normal.
+            self._perform_initial_generation()
+            end_time = time.perf_counter()
+            
+            duration = end_time - start_time
+            self.logger.info(f"Benchmark complete. Placeholder generation took: {duration:.3f} seconds.")
+            
+            # Set is_running to false to allow the finally block to execute
+            # and perform a clean shutdown without ever entering the main loop.
+            self.is_running = False
+        else:
+            # Run the standard loading method once before the game becomes interactive.
+            self._perform_initial_generation()
+            self.logger.info("Entering main loop.")
+
         try:
-            if self.profiler:
-                self.profiler.enable()
-
             while self.is_running:
                 self._handle_events()
                 self._update()

@@ -1,4 +1,8 @@
 {
+    "benchmark": {
+        "enabled": false,
+        "headless": false
+    },
     "display": {
         "fullscreen": true,
         "screen_width": 800,

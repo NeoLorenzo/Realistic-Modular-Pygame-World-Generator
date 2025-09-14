@@ -103,7 +103,8 @@ class WorldRenderer:
         
         # --- Scaled Surface Cache for Memoization (Rule 8 & 11) ---
         self.scaled_surface_cache = {}
-        self._last_camera_zoom = -1.0 # Used to detect zoom changes and invalidate the cache
+        self._last_camera_zoom = -1.0 # Used to detect zoom changes
+        self._last_view_mode = None   # Used to detect view mode changes
         
         # --- Asynchronous Generation Setup (Rule 8) ---
         self.generation_request_queue = queue.Queue()
@@ -113,8 +114,40 @@ class WorldRenderer:
         self.worker_thread.daemon = True
         self.worker_thread.start()
         self.pending_requests = set()
+        
+        # --- Color Lookup Table (LUT) Generation (Rule 11) ---
+        # Pre-calculate color gradients to replace expensive per-pixel math.
+        self._color_luts = {
+            "temperature": self._create_temperature_lut(),
+            "humidity": self._create_humidity_lut()
+        }
 
-        self.logger.info("WorldRenderer initialized with background worker.")
+        self.logger.info("WorldRenderer initialized with background worker and color LUTs.")
+
+    def _create_temperature_lut(self) -> np.ndarray:
+        """Creates a 256-entry color LUT for the temperature map."""
+        # Create an array of 256 values from 0.0 to 1.0
+        t = np.linspace(0.0, 1.0, 256)[..., np.newaxis]
+        color_map = self.color_maps["temperature"]
+        
+        # Apply the same np.select logic as before, but only once on the 256 values
+        colors = np.select(
+            [t < self.temp_levels["cold"], t < self.temp_levels["temperate"], t < self.temp_levels["hot"]],
+            [
+                (1 - t/self.temp_levels["cold"]) * np.array(color_map["coldest"]) + (t/self.temp_levels["cold"]) * np.array(color_map["cold"]),
+                (1 - (t-self.temp_levels["cold"])/(self.temp_levels["temperate"]-self.temp_levels["cold"])) * np.array(color_map["cold"]) + ((t-self.temp_levels["cold"])/(self.temp_levels["temperate"]-self.temp_levels["cold"])) * np.array(color_map["temperate"]),
+                (1 - (t-self.temp_levels["temperate"])/(self.temp_levels["hot"]-self.temp_levels["temperate"])) * np.array(color_map["temperate"]) + ((t-self.temp_levels["temperate"])/(self.temp_levels["hot"]-self.temp_levels["temperate"])) * np.array(color_map["hot"])
+            ],
+            default=(1 - (t-self.temp_levels["hot"])/(1.0-self.temp_levels["hot"])) * np.array(color_map["hot"]) + ((t-self.temp_levels["hot"])/(1.0-self.temp_levels["hot"])) * np.array(color_map["hottest"])
+        )
+        return colors.astype(np.uint8)
+
+    def _create_humidity_lut(self) -> np.ndarray:
+        """Creates a 256-entry color LUT for the humidity map."""
+        t = np.linspace(0.0, 1.0, 256)[..., np.newaxis]
+        color_map = self.color_maps["humidity"]
+        colors = (1 - t) * np.array(color_map["dry"]) + t * np.array(color_map["wet"])
+        return colors.astype(np.uint8)
 
     def _get_terrain_color_array(self, elevation_values: np.ndarray) -> np.ndarray:
         """Converts an array of elevation data into an RGB color array."""
@@ -141,29 +174,17 @@ class WorldRenderer:
         return np.transpose(colors, (1, 0, 2))
 
     def _get_temperature_color_array(self, temp_values: np.ndarray) -> np.ndarray:
-        """Converts an array of temperature data into an RGB color array."""
-        colors = np.zeros((*temp_values.shape, 3), dtype=np.uint8)
-        color_map = self.color_maps["temperature"]
-        
-        # Simple linear interpolation between color points
-        t = temp_values[..., np.newaxis]
-        colors[:] = np.select(
-            [t < self.temp_levels["cold"], t < self.temp_levels["temperate"], t < self.temp_levels["hot"]],
-            [
-                (1 - t/self.temp_levels["cold"]) * np.array(color_map["coldest"]) + (t/self.temp_levels["cold"]) * np.array(color_map["cold"]),
-                (1 - (t-self.temp_levels["cold"])/(self.temp_levels["temperate"]-self.temp_levels["cold"])) * np.array(color_map["cold"]) + ((t-self.temp_levels["cold"])/(self.temp_levels["temperate"]-self.temp_levels["cold"])) * np.array(color_map["temperate"]),
-                (1 - (t-self.temp_levels["temperate"])/(self.temp_levels["hot"]-self.temp_levels["temperate"])) * np.array(color_map["temperate"]) + ((t-self.temp_levels["temperate"])/(self.temp_levels["hot"]-self.temp_levels["temperate"])) * np.array(color_map["hot"])
-            ],
-            default=(1 - (t-self.temp_levels["hot"])/(1.0-self.temp_levels["hot"])) * np.array(color_map["hot"]) + ((t-self.temp_levels["hot"])/(1.0-self.temp_levels["hot"])) * np.array(color_map["hottest"])
-        )
+        """Converts an array of temperature data into an RGB color array using a LUT."""
+        # Scale the [0, 1] float values to [0, 255] integer indices
+        indices = (temp_values * 255).astype(np.uint8)
+        # Use the indices to look up the pre-calculated colors
+        colors = self._color_luts["temperature"][indices]
         return np.transpose(colors, (1, 0, 2))
 
     def _get_humidity_color_array(self, humidity_values: np.ndarray) -> np.ndarray:
-        """Converts an array of humidity data into an RGB color array."""
-        colors = np.zeros((*humidity_values.shape, 3), dtype=np.uint8)
-        color_map = self.color_maps["humidity"]
-        t = humidity_values[..., np.newaxis]
-        colors[:] = (1 - t) * np.array(color_map["dry"]) + t * np.array(color_map["wet"])
+        """Converts an array of humidity data into an RGB color array using a LUT."""
+        indices = (humidity_values * 255).astype(np.uint8)
+        colors = self._color_luts["humidity"][indices]
         return np.transpose(colors, (1, 0, 2))
 
     def _perform_chunk_generation(self, chunk_x: int, chunk_y: int, view_mode: str) -> pygame.Surface:
@@ -269,17 +290,48 @@ class WorldRenderer:
         
         return [(cx, cy) for cx in range(start_x, end_x + 1) for cy in range(start_y, end_y + 1)]
 
-    def prepare_entire_world(self, view_mode: str):
-        """Synchronously generates all placeholders for the entire world map."""
+    def prepare_entire_world(self):
+        """
+        Generator that prepares placeholders for ALL view modes, yielding progress.
+        This allows the UI to draw an accurate, multi-stage loading bar.
+        """
         world_width = self.generator.settings['world_width_chunks']
         world_height = self.generator.settings['world_height_chunks']
         
-        for cx in range(world_width):
+        view_modes_to_prepare = list(self.color_maps.keys())
+        num_stages = len(view_modes_to_prepare)
+        total_chunks_per_stage = world_width * world_height
+        
+        if total_chunks_per_stage == 0:
+            yield 100.0, "Preparation complete"
+            return
+
+        for i, view_mode in enumerate(view_modes_to_prepare):
+            status_message = f"Preparing {view_mode} maps..."
+            
+            # Skip if this view mode has already been fully cached
+            if len(self.placeholder_cache[view_mode]) == total_chunks_per_stage:
+                # Yield progress for this completed stage
+                for j in range(total_chunks_per_stage):
+                    overall_progress = ((i * total_chunks_per_stage + j + 1) / (num_stages * total_chunks_per_stage)) * 100
+                    yield overall_progress, status_message
+                continue
+
             for cy in range(world_height):
-                chunk_key = (cx, cy)
-                if chunk_key not in self.placeholder_cache[view_mode]:
-                    surface = self._generate_placeholder_surface(cx, cy, view_mode)
-                    self.placeholder_cache[view_mode][chunk_key] = surface
+                for cx in range(world_width):
+                    chunk_key = (cx, cy)
+                    if chunk_key not in self.placeholder_cache[view_mode]:
+                        surface = self._generate_placeholder_surface(cx, cy, view_mode)
+                        self.placeholder_cache[view_mode][chunk_key] = surface
+                    
+                    # Calculate and yield overall progress
+                    chunks_done_this_stage = (cy * world_width) + cx
+                    chunks_done_previous_stages = i * total_chunks_per_stage
+                    total_chunks_done = chunks_done_previous_stages + chunks_done_this_stage
+                    total_work = num_stages * total_chunks_per_stage
+                    
+                    overall_progress = (total_chunks_done / total_work) * 100
+                    yield overall_progress, status_message
 
     def draw(self, screen: pygame.Surface, camera, view_mode: str, high_res_zoom_threshold: float):
         """Draws the visible world and intelligently pre-caches chunks."""
@@ -320,9 +372,11 @@ class WorldRenderer:
             if scaled_size < 1:
                 continue
 
-            if camera.zoom != self._last_camera_zoom:
+            # Invalidate the scaled surface cache if zoom OR view mode has changed.
+            if camera.zoom != self._last_camera_zoom or view_mode != self._last_view_mode:
                 self.scaled_surface_cache.clear()
                 self._last_camera_zoom = camera.zoom
+                self._last_view_mode = view_mode
 
             scaled_surface = self.scaled_surface_cache.get(chunk_key)
             if scaled_surface is None:

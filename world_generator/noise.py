@@ -26,24 +26,24 @@ from numba import njit
 # Pre-defined gradient vectors for performance.
 _GRADIENT_VECTORS = np.array([[0, 1], [0, -1], [1, 0], [-1, 0]])
 
-@njit
+@njit(cache=True)
 def _lerp(a, b, x):
     "Linear interpolation."
     return a + x * (b - a)
 
-@njit
+@njit(cache=True)
 def _fade(t):
     "6t^5 - 15t^4 + 10t^3"
     return t * t * t * (t * (t * 6 - 15) + 10)
 
-@njit
+@njit(cache=True)
 def _gradient(h, x, y):
     """Calculates the dot product between a gradient vector and coordinates."""
     g = _GRADIENT_VECTORS[h % 4]
     # Use explicit indexing for Numba compatibility
     return g[0] * x + g[1] * y
 
-@njit
+@njit(cache=True)
 def perlin_noise_2d(p, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
     """
     Generate 2D Perlin noise using a pre-computed permutation table.
