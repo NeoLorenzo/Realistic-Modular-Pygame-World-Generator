@@ -17,8 +17,11 @@ from . import config as DEFAULTS
 
 # --- Default Color Mappings ---
 COLOR_MAP_TERRAIN = {
-    "deep_water": (0, 0, 50),
-    "shallow_water": (26, 102, 255),
+    # New 4-level water depth palette
+    "abyss": (0, 0, 50),          # Deepest water
+    "deep_water": (10, 20, 80),   # Deep
+    "mid_water": (20, 40, 120),   # Medium
+    "shallow_water": (26, 102, 255), # Shallowest
     "sand": (240, 230, 140),
     "grass": (34, 139, 34),
     "dirt": (139, 69, 19),
@@ -65,22 +68,73 @@ def create_humidity_lut() -> np.ndarray:
 
 # --- Color Array Generation Functions ---
 def get_terrain_color_array(elevation_values: np.ndarray) -> np.ndarray:
-    """Converts an array of elevation data into an RGB color array."""
+    """
+    Converts an array of elevation data into an RGB color array using
+    4 distinct levels for water depth.
+    """
     color_map = COLOR_MAP_TERRAIN
     levels = DEFAULTS.TERRAIN_LEVELS
-    bins = [levels["water"], levels["sand"], levels["grass"], levels["dirt"]]
-    color_lookup = np.array([
-        color_map["shallow_water"], color_map["sand"], color_map["grass"],
-        color_map["dirt"], color_map["mountain"]
+
+    # Define the elevation boundaries for land terrain types only.
+    # These values represent the upper bound of each category.
+    water_level = levels["water"]
+    land_bins = [
+        levels["sand"],
+        levels["grass"],
+        levels["dirt"]
+    ]
+    
+    # Define a corresponding color lookup table for land. The order must match
+    # the categories defined by the bins: sand, grass, dirt, and finally mountain
+    # for everything above the last bin.
+    land_color_lookup = np.array([
+        color_map["sand"],
+        color_map["grass"],
+        color_map["dirt"],
+        color_map["mountain"]
     ], dtype=np.uint8)
-    indices = np.digitize(elevation_values, bins=bins)
-    colors = color_lookup[indices]
-    water_mask = indices == 0
+
+    # --- Land Color Calculation ---
+    # Initialize a color array filled with a default (e.g., abyss color).
+    colors = np.full(elevation_values.shape + (3,), color_map["abyss"], dtype=np.uint8)
+    
+    # Create a mask for all land pixels.
+    land_mask = elevation_values >= water_level
+    
+    # Digitize and color only the land pixels.
+    if np.any(land_mask):
+        land_elevations = elevation_values[land_mask]
+        indices = np.digitize(land_elevations, bins=land_bins)
+        colors[land_mask] = land_color_lookup[indices]
+
+    # --- Water Color Calculation (4 Levels) ---
+    # Create a mask for all water pixels.
+    water_mask = ~land_mask
     if np.any(water_mask):
-        t = (elevation_values[water_mask] / levels["water"])[..., np.newaxis]
-        c1 = np.array(color_map["deep_water"])
-        c2 = np.array(color_map["shallow_water"])
-        colors[water_mask] = ((1 - t) * c1 + t * c2).astype(np.uint8)
+        # 1. Define the elevation boundaries for the 4 water depths.
+        water_bins = [
+            water_level * 0.25,  # Upper bound for abyss
+            water_level * 0.50,  # Upper bound for deep_water
+            water_level * 0.75   # Upper bound for mid_water
+        ]
+        
+        # 2. Define a corresponding color lookup table.
+        water_color_lookup = np.array([
+            color_map["abyss"],
+            color_map["deep_water"],
+            color_map["mid_water"],
+            color_map["shallow_water"] # Default for elevations > last bin
+        ], dtype=np.uint8)
+
+        # 3. Get the elevation values for only the water pixels.
+        water_elevations = elevation_values[water_mask]
+        
+        # 4. Use np.digitize to get an index (0-3) for each water pixel.
+        water_indices = np.digitize(water_elevations, bins=water_bins)
+        
+        # 5. Use the indices to look up the correct color and assign it.
+        colors[water_mask] = water_color_lookup[water_indices]
+
     return np.transpose(colors, (1, 0, 2))
 
 def get_temperature_color_array(temp_values: np.ndarray, temp_lut: np.ndarray) -> np.ndarray:

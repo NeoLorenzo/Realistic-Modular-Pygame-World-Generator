@@ -13,6 +13,8 @@ from datetime import datetime
 import pygame_gui
 import subprocess
 import time
+import hashlib
+import numpy as np
 
 # To import from the parent directory (Modular_Pygame_World_Generator),
 # we add it to the Python path.
@@ -20,6 +22,8 @@ import time
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from world_generator.generator import WorldGenerator
+# Import the color_maps module to access its functions.
+from world_generator import color_maps
 from renderer import WorldRenderer
 from camera import Camera
 
@@ -29,9 +33,20 @@ UI_ELEMENT_HEIGHT = 25
 UI_SLIDER_HEIGHT = 50
 UI_PADDING = 10
 UI_BUTTON_HEIGHT = 40
+
+# --- Live Preview Application Constants (Rule 1) ---
+# The resolution of the single surface used for the live preview.
+PREVIEW_RESOLUTION_WIDTH = 1600
+PREVIEW_RESOLUTION_HEIGHT = 900
+
+# --- Bake Estimation Constants (Rule 8) ---
 # An estimated average size for a 100x100 chunk PNG in KB.
-# This is a scientifically-grounded abstraction (Rule 8) for the UI estimate.
 ESTIMATED_CHUNK_SIZE_KB = 15.0
+# An estimated size for a compressed 1x1 uniform chunk PNG in KB.
+ESTIMATED_COMPRESSED_CHUNK_SIZE_KB = 0.5
+# The grid size for the bake size estimation analysis.
+ESTIMATE_GRID_WIDTH = 160
+ESTIMATE_GRID_HEIGHT = 90
 
 class Application:
     """The main application class for the basic viewer."""
@@ -63,9 +78,33 @@ class Application:
         self.world_width_input = None
         self.world_height_input = None
         self.apply_size_button = None
+        self.km_size_label = None # New label for KM dimensions
         # Bake Controls
         self.bake_button = None
         self.size_estimate_label = None
+        
+        # --- State for Live Preview Mode ---
+        # This MUST be initialized before _setup_ui() is called.
+        self.live_preview_surface = None
+        self.world_params_dirty = True # Flag to trigger regeneration
+        # This will hold the result of the bake size analysis.
+        self.estimated_uniform_ratio = 0.0
+        # Pre-compute color LUTs once to avoid doing it every frame (Rule 11)
+        self.temp_lut = color_maps.create_temperature_lut()
+        self.humidity_lut = color_maps.create_humidity_lut()
+
+        # --- Dependency Injection (Rule 7, DIP) ---
+        # This block MUST be executed before _setup_ui() because the UI
+        # now depends on the world_generator for its initial values.
+        self.world_generator = WorldGenerator(
+            config=self.config.get('world_generation_parameters', {}),
+            logger=self.logger
+        )
+        self.camera = Camera(self.config, self.world_generator)
+        self.world_renderer = WorldRenderer(
+            logger=self.logger
+        )
+
         self._setup_ui()
 
         # --- Profiling Setup (Rule 11) ---
@@ -93,23 +132,6 @@ class Application:
             for step in self.perf_test_config.get('path', []):
                 for _ in range(step['frames']):
                     self._perf_test_path.append(step)
-
-        # --- State for Live Preview Mode ---
-        self.live_preview_surface = None
-        self.world_params_dirty = True # Flag to trigger regeneration
-
-        # --- Dependency Injection (Rule 7, DIP) ---
-        # The Generator is the authority on world data, but is now used on-demand by the renderer.
-        self.world_generator = WorldGenerator(
-            config=self.config.get('world_generation_parameters', {}),
-            logger=self.logger
-        )
-        # The camera still needs the generator for world dimensions.
-        self.camera = Camera(self.config, self.world_generator)
-        # The renderer is now independent of a generator instance at startup.
-        self.world_renderer = WorldRenderer(
-            logger=self.logger
-        )
 
         self.is_running = True
 
@@ -198,8 +220,8 @@ class Application:
         current_y = UI_PADDING
         element_width = UI_PANEL_WIDTH - (3 * UI_PADDING) # Width inside the panel
 
-        # --- Get world parameters for setting initial slider values ---
-        world_params = self.config['world_generation_parameters']
+        # --- Get world parameters from the generator, the single source of truth ---
+        world_settings = self.world_generator.settings
 
         # --- Slider 1: Target Sea Level Temperature ---
         pygame_gui.elements.UILabel(
@@ -212,7 +234,7 @@ class Application:
 
         self.temp_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_params.get('target_sea_level_temp_c', 15.0),
+            start_value=world_settings.get('target_sea_level_temp_c', 15.0),
             value_range=(-20.0, 40.0),
             manager=self.ui_manager,
             container=self.ui_panel
@@ -230,7 +252,7 @@ class Application:
 
         self.roughness_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_params.get('detail_noise_weight', 0.25),
+            start_value=world_settings.get('detail_noise_weight', 0.25),
             value_range=(0.0, 1.0),
             manager=self.ui_manager,
             container=self.ui_panel
@@ -248,7 +270,7 @@ class Application:
 
         self.lapse_rate_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_params.get('lapse_rate_c_per_unit_elevation', 40.0),
+            start_value=world_settings.get('lapse_rate_c_per_unit_elevation', 40.0),
             value_range=(0.0, 100.0),
             manager=self.ui_manager,
             container=self.ui_panel
@@ -266,7 +288,7 @@ class Application:
 
         self.continent_size_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_params.get('terrain_base_feature_scale_km', 40.0),
+            start_value=world_settings.get('terrain_base_feature_scale_km', 40.0),
             value_range=(5.0, 200.0),
             manager=self.ui_manager,
             container=self.ui_panel
@@ -284,7 +306,7 @@ class Application:
 
         self.terrain_amplitude_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_params.get('terrain_amplitude', 2.5),
+            start_value=world_settings.get('terrain_amplitude', 2.5),
             value_range=(0.5, 5.0),
             manager=self.ui_manager,
             container=self.ui_panel
@@ -302,7 +324,7 @@ class Application:
 
         self.polar_drop_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_params.get('polar_temperature_drop_c', 30.0),
+            start_value=world_settings.get('polar_temperature_drop_c', 30.0),
             value_range=(0.0, 80.0),
             manager=self.ui_manager,
             container=self.ui_panel
@@ -324,14 +346,14 @@ class Application:
             manager=self.ui_manager,
             container=self.ui_panel
         )
-        self.world_width_input.set_text(str(world_params.get('world_width_chunks', 800)))
+        self.world_width_input.set_text(str(world_settings.get('world_width_chunks', 800)))
 
         self.world_height_input = pygame_gui.elements.UITextEntryLine(
             relative_rect=pygame.Rect(UI_PADDING + input_width + UI_PADDING, current_y, input_width, UI_ELEMENT_HEIGHT),
             manager=self.ui_manager,
             container=self.ui_panel
         )
-        self.world_height_input.set_text(str(world_params.get('world_height_chunks', 450)))
+        self.world_height_input.set_text(str(world_settings.get('world_height_chunks', 450)))
         current_y += UI_ELEMENT_HEIGHT + UI_PADDING
 
         self.apply_size_button = pygame_gui.elements.UIButton(
@@ -340,16 +362,34 @@ class Application:
             manager=self.ui_manager,
             container=self.ui_panel
         )
-        current_y += UI_BUTTON_HEIGHT + (UI_PADDING * 2)
+        current_y += UI_BUTTON_HEIGHT
+
+        # --- New Label for KM Display ---
+        self.km_size_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="(calculating km...)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        self._update_km_size_label() # Set initial value
+        current_y += UI_ELEMENT_HEIGHT + (UI_PADDING * 2)
 
         # --- Bake Button and Size Estimate ---
         self.size_estimate_label = pygame_gui.elements.UILabel(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
-            text="Estimated size: calculating...",
+            text="Estimated Size: (Not Calculated)",
             manager=self.ui_manager,
             container=self.ui_panel
         )
         current_y += UI_ELEMENT_HEIGHT
+
+        self.calculate_size_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_BUTTON_HEIGHT),
+            text="Calculate Bake Size",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_BUTTON_HEIGHT + UI_PADDING
 
         self.bake_button = pygame_gui.elements.UIButton(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_BUTTON_HEIGHT),
@@ -357,9 +397,6 @@ class Application:
             manager=self.ui_manager,
             container=self.ui_panel
         )
-
-        # Set the initial size estimate
-        self._update_bake_size_estimate()
 
     def run(self):
         """The main application loop."""
@@ -407,12 +444,17 @@ class Application:
                 # --- Live Preview Regeneration (Rule 5) ---
                 # If any parameter has changed, regenerate the single preview surface.
                 if self.world_params_dirty:
-                    self.logger.info(f"World parameters changed. Regenerating live preview for view mode: '{self.view_mode}'...")
-                    # Pass the complete, current world parameters to the renderer.
-                    self.live_preview_surface = self.world_renderer.generate_live_preview_surface(
-                        world_params=self.config['world_generation_parameters'],
-                        view_mode=self.view_mode
-                    )
+                    self.logger.info(f"World parameters changed. Regenerating preview data for view mode: '{self.view_mode}'...")
+                    
+                    # The Application now orchestrates data generation for the preview.
+                    color_array = self._generate_preview_color_array()
+                    
+                    # Pass the final color data to the renderer to create the surface.
+                    self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
+                    
+                    # Reset the estimate label as the world has changed.
+                    self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
+                    
                     self.world_params_dirty = False
                     self.logger.info("Live preview regeneration complete.")
 
@@ -464,20 +506,24 @@ class Application:
             # --- Handle UI Events for Live Editing ---
             if event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
                 new_value = event.value
-                params = self.config['world_generation_parameters']
+                # Modify the generator's settings directly. This is the fix.
+                settings = self.world_generator.settings
                 
                 if event.ui_element == self.temp_slider:
-                    params['target_sea_level_temp_c'] = new_value
+                    settings['target_sea_level_temp_c'] = new_value
                 elif event.ui_element == self.roughness_slider:
-                    params['detail_noise_weight'] = new_value
+                    settings['detail_noise_weight'] = new_value
                 elif event.ui_element == self.lapse_rate_slider:
-                    params['lapse_rate_c_per_unit_elevation'] = new_value
+                    settings['lapse_rate_c_per_unit_elevation'] = new_value
                 elif event.ui_element == self.continent_size_slider:
-                    params['terrain_base_feature_scale_km'] = new_value
+                    # When changing feature scale, the internal '_noise_scale' must also be updated.
+                    settings['terrain_base_feature_scale_km'] = new_value
+                    from world_generator.config import CM_PER_KM
+                    settings['base_noise_scale'] = new_value * CM_PER_KM
                 elif event.ui_element == self.terrain_amplitude_slider:
-                    params['terrain_amplitude'] = new_value
+                    settings['terrain_amplitude'] = new_value
                 elif event.ui_element == self.polar_drop_slider:
-                    params['polar_temperature_drop_c'] = new_value
+                    settings['polar_temperature_drop_c'] = new_value
                 
                 self.world_params_dirty = True
             
@@ -486,6 +532,8 @@ class Application:
                     self._start_background_bake()
                 elif event.ui_element == self.apply_size_button:
                     self._apply_world_size_changes()
+                elif event.ui_element == self.calculate_size_button:
+                    self._calculate_and_display_bake_size()
 
             # --- Handle user-driven events only if test is not running ---
             if event.type == pygame.MOUSEWHEEL:
@@ -528,21 +576,23 @@ class Application:
 
             self.logger.info(f"Applying new world size: {new_width}x{new_height} chunks.")
 
-            # 1. Update the configuration dictionary
-            self.config['world_generation_parameters']['world_width_chunks'] = new_width
-            self.config['world_generation_parameters']['world_height_chunks'] = new_height
+            # 1. Get the current settings from the existing generator to preserve slider changes.
+            current_settings = self.world_generator.settings
+            current_settings['world_width_chunks'] = new_width
+            current_settings['world_height_chunks'] = new_height
 
-            # 2. Re-initialize the WorldGenerator with the updated config
+            # 2. Re-initialize the WorldGenerator with the updated settings dictionary.
             self.world_generator = WorldGenerator(
-                config=self.config.get('world_generation_parameters', {}),
+                config=current_settings,
                 logger=self.logger
             )
 
             # 3. Re-initialize the Camera, which depends on the generator's dimensions
             self.camera = Camera(self.config, self.world_generator)
 
-            # 4. Update the bake size estimate label
-            self._update_bake_size_estimate()
+            # 4. Update the new KM label and reset the bake size estimate
+            self._update_km_size_label()
+            self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
 
             # 5. Trigger a full regeneration of the live preview
             self.world_params_dirty = True
@@ -553,22 +603,107 @@ class Application:
             self.world_width_input.set_text(str(self.config['world_generation_parameters']['world_width_chunks']))
             self.world_height_input.set_text(str(self.config['world_generation_parameters']['world_height_chunks']))
 
-    def _update_bake_size_estimate(self):
-        """Calculates and displays the estimated disk space for a full bake."""
-        if not self.size_estimate_label:
+    def _update_km_size_label(self):
+        """Calculates and displays the world size in kilometers."""
+        if not self.km_size_label:
             return
 
-        w_params = self.config['world_generation_parameters']
-        width_chunks = w_params.get('world_width_chunks', 800)
-        height_chunks = w_params.get('world_height_chunks', 450)
+        from world_generator.config import CM_PER_KM
         
-        total_chunks = width_chunks * height_chunks
+        width_km = self.world_generator.world_width_cm / CM_PER_KM
+        height_km = self.world_generator.world_height_cm / CM_PER_KM
+
+        self.km_size_label.set_text(f"({width_km:.1f} km x {height_km:.1f} km)")
+
+    def _generate_preview_color_array(self) -> np.ndarray:
+        """
+        Generates the raw data and color array for the current preview state.
+        This centralizes the data generation logic previously in the renderer.
+        """
+        # These constants are now correctly defined at the top of this file.
+        # The incorrect import has been removed.
+        
+        # Create a coordinate grid for the entire world at preview resolution.
+        wx = np.linspace(0, self.world_generator.world_width_cm, PREVIEW_RESOLUTION_WIDTH)
+        wy = np.linspace(0, self.world_generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
+        wx_grid, wy_grid = np.meshgrid(wx, wy)
+
+        # Generate all data layers first to allow for reuse (Rule 11).
+        elevation_data = self.world_generator.get_elevation(wx_grid, wy_grid)
+        temp_data = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data)
+        humidity_data = self.world_generator.get_humidity(wx_grid, wy_grid, temp_data)
+
+        # Select the correct color map based on the current view mode.
+        if self.view_mode == "terrain":
+            return color_maps.get_terrain_color_array(elevation_data)
+        elif self.view_mode == "temperature":
+            return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
+        else: # humidity
+            return color_maps.get_humidity_color_array(humidity_data, self.humidity_lut)
+
+    def _calculate_and_display_bake_size(self):
+        """
+        Performs an on-demand analysis of the world to provide a hyper-accurate
+        bake size estimate that accounts for both uniform chunk compression and
+        content-based deduplication.
+        """
+        self.logger.info("Calculating bake size estimate...")
+        self.size_estimate_label.set_text("Estimating... Please Wait")
+
+        # 1. Generate preview data for terrain, which serves as our proxy.
+        color_array = self._generate_preview_color_array()
+
+        # 2. Analyze the preview data by simulating the baker's logic.
+        h, w, _ = color_array.shape
+        grid_h, grid_w = ESTIMATE_GRID_HEIGHT, ESTIMATE_GRID_WIDTH
+        cell_h, cell_w = h // grid_h, w // grid_w
+
+        if cell_h == 0 or cell_w == 0:
+            self.logger.warning("Preview resolution too small for analysis.")
+            self.size_estimate_label.set_text("Error: Preview too small")
+            return
+
+        unique_hashes = set()
+        unique_uniform_count = 0
+        unique_full_count = 0
+
+        for i in range(grid_h):
+            for j in range(grid_w):
+                cell = color_array[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+                cell_hash = hashlib.md5(cell.tobytes()).hexdigest()
+
+                if cell_hash not in unique_hashes:
+                    unique_hashes.add(cell_hash)
+                    if (cell == cell[0, 0]).all():
+                        unique_uniform_count += 1
+                    else:
+                        unique_full_count += 1
+        
+        # 3. Use the absolute count of unique patterns from the preview as the estimate.
+        # This correctly assumes the preview is a comprehensive catalog of all terrain types.
+        if not unique_hashes: return
+
         num_view_modes = len(self.view_modes)
+
+        # The total number of unique chunks in the final bake is estimated to be the
+        # number of unique micro-chunks we found in the preview. We no longer
+        # extrapolate a ratio.
+        estimated_total_unique_chunks = len(unique_hashes)
+
+        # Find the ratio of uniform vs. full chunks within our set of unique patterns.
+        ratio_uniform = unique_uniform_count / estimated_total_unique_chunks
+        ratio_full = unique_full_count / estimated_total_unique_chunks
         
-        total_kb = total_chunks * num_view_modes * ESTIMATED_CHUNK_SIZE_KB
+        # 4. Calculate the final size based on the absolute number and mix of unique chunks.
+        # This size is now independent of the world's total chunk count.
+        size_kb_uniform = (estimated_total_unique_chunks * ratio_uniform) * ESTIMATED_COMPRESSED_CHUNK_SIZE_KB
+        size_kb_full = (estimated_total_unique_chunks * ratio_full) * ESTIMATED_CHUNK_SIZE_KB
+        
+        total_kb = (size_kb_uniform + size_kb_full) * num_view_modes
         total_gb = total_kb / (1024 * 1024)
 
         self.size_estimate_label.set_text(f"Estimated Bake Size: {total_gb:.2f} GB")
+        self.logger.info(f"Bake size estimation complete. Result: {total_gb:.2f} GB")
 
     def _start_background_bake(self):
         """

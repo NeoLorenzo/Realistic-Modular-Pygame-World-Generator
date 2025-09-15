@@ -32,13 +32,6 @@ from world_generator import config as DEFAULTS
 # Import the new shared color mapping utility
 from world_generator import color_maps
 
-# --- Live Preview Constants (Rule 1) ---
-# The resolution of the single surface used for the live preview.
-# Higher values provide more detail at the cost of slower regeneration.
-PREVIEW_RESOLUTION_WIDTH = 1600
-PREVIEW_RESOLUTION_HEIGHT = 900
-
-
 # --- Default Color Mappings ---
 # These are used by the renderer if no other color map is provided.
 # Format: (R, G, B)
@@ -203,33 +196,13 @@ class WorldRenderer:
 
     # --- All methods related to chunking and async generation have been removed ---
 
-    def generate_live_preview_surface(self, world_params: dict, view_mode: str) -> pygame.Surface:
+    def create_surface_from_color_array(self, color_array: np.ndarray) -> pygame.Surface:
         """
-        Generates a single, complete surface for the entire world at a fixed
-        preview resolution. This is a computationally intensive, on-demand method.
+        Converts a NumPy color array into a Pygame surface.
+        This is now the renderer's single responsibility for previews.
         """
-        # 1. Instantiate a WorldGenerator with the provided parameters.
-        #    This ensures the preview is always based on the latest settings.
-        generator = WorldGenerator(config=world_params, logger=self.logger)
-
-        # 2. Create a coordinate grid for the entire world at preview resolution.
-        wx = np.linspace(0, generator.world_width_cm, PREVIEW_RESOLUTION_WIDTH)
-        wy = np.linspace(0, generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
-        wx_grid, wy_grid = np.meshgrid(wx, wy)
-
-        # 3. Generate data and color arrays based on the selected view mode.
-        self.logger.debug(f"Generating preview data for '{view_mode}'...")
-        if view_mode == "terrain":
-            elevation_data = generator.get_elevation(wx_grid, wy_grid)
-            color_array = color_maps.get_terrain_color_array(elevation_data)
-        elif view_mode == "temperature":
-            temp_data = generator.get_temperature(wx_grid, wy_grid)
-            color_array = color_maps.get_temperature_color_array(temp_data, self._color_luts["temperature"])
-        else: # humidity
-            humidity_data = generator.get_humidity(wx_grid, wy_grid)
-            color_array = color_maps.get_humidity_color_array(humidity_data, self._color_luts["humidity"])
-        
-        # 4. Create and return the final Pygame surface.
+        # The check for None is removed as the Application is now responsible
+        # for ensuring a valid color_array is always passed.
         return pygame.surfarray.make_surface(color_array)
 
     def draw_live_preview(self, screen: pygame.Surface, camera, preview_surface: pygame.Surface):
