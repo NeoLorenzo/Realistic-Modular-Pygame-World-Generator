@@ -41,6 +41,8 @@ COLOR_MAP_HUMIDITY = {
     "wet": (70, 130, 180)
 }
 
+HUMIDITY_STEPS = 100 # The number of discrete steps for the humidity map
+
 # --- Color Lookup Table (LUT) Generation ---
 def create_temperature_lut() -> np.ndarray:
     """Creates a 256-entry color LUT for the temperature map."""
@@ -139,18 +141,34 @@ def get_terrain_color_array(elevation_values: np.ndarray) -> np.ndarray:
 
 def get_temperature_color_array(temp_values: np.ndarray, temp_lut: np.ndarray) -> np.ndarray:
     """Converts Celsius temperature data into an RGB color array using a pre-computed LUT."""
+    # --- Quantization Step (Rule 8) ---
+    # Round to the nearest whole degree to create discrete temperature bands.
+    # This dramatically improves deduplication for a massive storage saving.
+    quantized_temps = np.round(temp_values)
+
     min_temp_c = DEFAULTS.MIN_GLOBAL_TEMP_C
     temp_range_c = DEFAULTS.MAX_GLOBAL_TEMP_C - min_temp_c
-    normalized_temp = (temp_values - min_temp_c) / temp_range_c
+    # Normalize the quantized data
+    normalized_temp = (quantized_temps - min_temp_c) / temp_range_c
     indices = (normalized_temp * 255).astype(np.uint8)
     colors = temp_lut[indices]
     return np.transpose(colors, (1, 0, 2))
 
 def get_humidity_color_array(humidity_values: np.ndarray, humidity_lut: np.ndarray) -> np.ndarray:
     """Converts absolute humidity data into an RGB color array using a pre-computed LUT."""
-    min_humidity_g_m3 = DEFAULTS.MIN_ABSOLUTE_HUMIDITY_G_M3
-    humidity_range_g_m3 = DEFAULTS.MAX_ABSOLUTE_HUMIDITY_G_M3 - min_humidity_g_m3
-    normalized_humidity = (humidity_values - min_humidity_g_m3) / humidity_range_g_m3
+    min_humidity = DEFAULTS.MIN_ABSOLUTE_HUMIDITY_G_M3
+    max_humidity = DEFAULTS.MAX_ABSOLUTE_HUMIDITY_G_M3
+    humidity_range = max_humidity - min_humidity
+
+    # --- Quantization Step (Rule 8) ---
+    # Normalize to [0, 1], scale by the number of steps, round, then scale back.
+    # This divides the humidity range into a fixed number of discrete levels.
+    normalized_values = (humidity_values - min_humidity) / humidity_range
+    stepped_values = np.round(normalized_values * HUMIDITY_STEPS) / HUMIDITY_STEPS
+    quantized_humidity = (stepped_values * humidity_range) + min_humidity
+
+    # Normalize the quantized data for color mapping
+    normalized_humidity = (quantized_humidity - min_humidity) / humidity_range
     indices = (normalized_humidity * 255).astype(np.uint8)
     colors = humidity_lut[indices]
     return np.transpose(colors, (1, 0, 2))

@@ -33,13 +33,14 @@ class WorldGenerator:
     Generates and manages the raw data for a procedurally generated world.
     This class is backend-only and does not handle any visualization.
     """
-    def __init__(self, config: dict, logger: logging.Logger):
+    def __init__(self, config: dict, logger: logging.Logger, distance_map_data: dict = None):
         """
         Initializes the world generator.
 
         Args:
             config (dict): User-defined parameters to override defaults.
             logger (logging.Logger): The logger instance for all output.
+            distance_map_data (dict, optional): Pre-computed distance map data to inject.
         """
         self.logger = logger
         self.user_config = config
@@ -119,7 +120,14 @@ class WorldGenerator:
         self._distance_map = None
         self._distance_map_scale_x = 1.0
         self._distance_map_scale_y = 1.0
-        self._precompute_distance_map()
+        
+        if distance_map_data:
+            self.logger.info("Injecting pre-computed distance map.")
+            self._distance_map = distance_map_data['map']
+            self._distance_map_scale_x = distance_map_data['scale_x']
+            self._distance_map_scale_y = distance_map_data['scale_y']
+        else:
+            self._precompute_distance_map()
 
     def get_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
         """
@@ -179,18 +187,20 @@ class WorldGenerator:
         # Normalize values to range [0, 1]
         return (noise_values + 1) / 2
 
-    def get_temperature(self, x_coords: np.ndarray, y_coords: np.ndarray, elevation_data: np.ndarray = None) -> np.ndarray:
+    def get_temperature(self, x_coords: np.ndarray, y_coords: np.ndarray, elevation_data: np.ndarray = None, base_noise: np.ndarray = None) -> np.ndarray:
         """
-        Generates temperature data in Celsius using a real-world model.
-        The final output is an array of Celsius values, NOT normalized data.
-        Can accept pre-computed elevation_data to avoid recalculation.
+        Generates temperature data in Celsius.
+        Can accept pre-computed elevation_data and base_noise to avoid recalculation.
         """
-        # 1. Generate base noise [0, 1] for temperature variation.
-        noise = self._generate_base_noise(
-            x_coords, y_coords,
-            seed_offset=self.settings['temp_seed_offset'],
-            scale=self.settings['climate_noise_scale']
-        )
+        # 1. Generate base noise [0, 1] for temperature variation if not provided.
+        if base_noise is None:
+            noise = self._generate_base_noise(
+                x_coords, y_coords,
+                seed_offset=self.settings['temp_seed_offset'],
+                scale=self.settings['climate_noise_scale']
+            )
+        else:
+            noise = base_noise
 
         # 2. Calculate the sea-level temperature in Celsius. This is re-calibrated
         #    to ensure the 'target_sea_level_temp_c' remains the true global average.
@@ -297,11 +307,10 @@ class WorldGenerator:
         # Return the distance values from the map.
         return self._distance_map[map_y, map_x]
 
-    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray, temperature_data_c: np.ndarray = None) -> np.ndarray:
+    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray, temperature_data_c: np.ndarray = None, base_noise: np.ndarray = None) -> np.ndarray:
         """
-        Generates absolute humidity (g/m³) using a realistic model based on
-        temperature, distance from water, and local noise.
-        Can accept pre-computed temperature_data_c to avoid recalculation.
+        Generates absolute humidity (g/m³).
+        Can accept pre-computed temperature_data_c and base_noise to avoid recalculation.
         """
         # 1. Get temperature in Celsius, as it's the primary driver of humidity.
         #    If temperature_data_c is not provided, calculate it. Otherwise, use the cached version.
@@ -324,11 +333,14 @@ class WorldGenerator:
         relative_humidity = 1.0 - np.clip(normalized_distance, 0, 1)
 
         # 5. Add local variation with Perlin noise.
-        base_humidity_noise = self._generate_base_noise(
-            x_coords, y_coords,
-            seed_offset=self.settings['humidity_seed_offset'],
-            scale=self.settings['climate_noise_scale']
-        )
+        if base_noise is None:
+            base_humidity_noise = self._generate_base_noise(
+                x_coords, y_coords,
+                seed_offset=self.settings['humidity_seed_offset'],
+                scale=self.settings['climate_noise_scale']
+            )
+        else:
+            base_humidity_noise = base_noise
 
         # 6. Combine the factors to get the final absolute humidity.
         #    The noise here acts as a percentage of the potential humidity.

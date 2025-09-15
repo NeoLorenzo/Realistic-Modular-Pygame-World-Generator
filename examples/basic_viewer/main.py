@@ -42,6 +42,8 @@ PREVIEW_RESOLUTION_HEIGHT = 900
 # --- Bake Estimation Constants (Rule 8) ---
 # An estimated average size for a 100x100 chunk PNG in KB.
 ESTIMATED_CHUNK_SIZE_KB = 15.0
+# An estimated average size for a 100x100 8-bit palettized PNG in KB.
+ESTIMATED_PALETTIZED_CHUNK_SIZE_KB = 4.0
 # An estimated size for a compressed 1x1 uniform chunk PNG in KB.
 ESTIMATED_COMPRESSED_CHUNK_SIZE_KB = 0.5
 # The grid size for the bake size estimation analysis.
@@ -665,41 +667,46 @@ class Application:
 
         unique_hashes = set()
         unique_uniform_count = 0
+        unique_palettized_count = 0
         unique_full_count = 0
 
         for i in range(grid_h):
             for j in range(grid_w):
                 cell = color_array[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
+                # Skip empty cells that can result from integer division
+                if cell.size == 0:
+                    continue
+                
                 cell_hash = hashlib.md5(cell.tobytes()).hexdigest()
 
                 if cell_hash not in unique_hashes:
                     unique_hashes.add(cell_hash)
+                    
+                    # Tier 1: Check for uniform.
                     if (cell == cell[0, 0]).all():
                         unique_uniform_count += 1
                     else:
-                        unique_full_count += 1
+                        # Tier 2: Check for low color count.
+                        num_colors = len(np.unique(cell.reshape(-1, 3), axis=0))
+                        if num_colors <= 256:
+                            unique_palettized_count += 1
+                        else:
+                            # Tier 3: Fallback to full.
+                            unique_full_count += 1
         
         # 3. Use the absolute count of unique patterns from the preview as the estimate.
-        # This correctly assumes the preview is a comprehensive catalog of all terrain types.
         if not unique_hashes: return
 
         num_view_modes = len(self.view_modes)
 
-        # The total number of unique chunks in the final bake is estimated to be the
-        # number of unique micro-chunks we found in the preview. We no longer
-        # extrapolate a ratio.
-        estimated_total_unique_chunks = len(unique_hashes)
-
-        # Find the ratio of uniform vs. full chunks within our set of unique patterns.
-        ratio_uniform = unique_uniform_count / estimated_total_unique_chunks
-        ratio_full = unique_full_count / estimated_total_unique_chunks
-        
         # 4. Calculate the final size based on the absolute number and mix of unique chunks.
-        # This size is now independent of the world's total chunk count.
-        size_kb_uniform = (estimated_total_unique_chunks * ratio_uniform) * ESTIMATED_COMPRESSED_CHUNK_SIZE_KB
-        size_kb_full = (estimated_total_unique_chunks * ratio_full) * ESTIMATED_CHUNK_SIZE_KB
+        size_kb_uniform = unique_uniform_count * ESTIMATED_COMPRESSED_CHUNK_SIZE_KB
+        size_kb_palettized = unique_palettized_count * ESTIMATED_PALETTIZED_CHUNK_SIZE_KB
+        size_kb_full = unique_full_count * ESTIMATED_CHUNK_SIZE_KB
         
-        total_kb = (size_kb_uniform + size_kb_full) * num_view_modes
+        # The total size is the sum of the sizes of all unique chunks found,
+        # multiplied by the number of view modes (terrain, temp, etc.).
+        total_kb = (size_kb_uniform + size_kb_palettized + size_kb_full) * num_view_modes
         total_gb = total_kb / (1024 * 1024)
 
         self.size_estimate_label.set_text(f"Estimated Bake Size: {total_gb:.2f} GB")
