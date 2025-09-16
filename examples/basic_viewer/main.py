@@ -84,6 +84,9 @@ class Application:
         # Bake Controls
         self.bake_button = None
         self.size_estimate_label = None
+        # Tooltip
+        self.tooltip = None
+        self.last_mouse_world_pos = (None, None)
         
         # --- State for Live Preview Mode ---
         # This MUST be initialized before _setup_ui() is called.
@@ -400,6 +403,16 @@ class Application:
             container=self.ui_panel
         )
 
+        # --- Tooltip Initialization ---
+        # Create the tooltip label but keep it hidden initially.
+        # It's not attached to the panel, so it can float over the whole screen.
+        self.tooltip = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(0, 0, 220, 70), # Initial size, will be adjusted
+            text="",
+            manager=self.ui_manager,
+            visible=False
+        )
+
     def run(self):
         """The main application loop."""
         # Profiler is now enabled conditionally based on the run mode.
@@ -633,11 +646,13 @@ class Application:
         # Generate all data layers first to allow for reuse (Rule 11).
         elevation_data = self.world_generator.get_elevation(wx_grid, wy_grid)
         temp_data = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data)
-        humidity_data = self.world_generator.get_humidity(wx_grid, wy_grid, temp_data)
+        humidity_data = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data, temp_data)
 
         # Select the correct color map based on the current view mode.
         if self.view_mode == "terrain":
-            return color_maps.get_terrain_color_array(elevation_data)
+            # Pass all three climate layers to the terrain color function
+            # to allow it to calculate the full biome model.
+            return color_maps.get_terrain_color_array(elevation_data, temp_data, humidity_data)
         elif self.view_mode == "temperature":
             return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
         else: # humidity
@@ -712,6 +727,84 @@ class Application:
         self.size_estimate_label.set_text(f"Estimated Bake Size: {total_gb:.2f} GB")
         self.logger.info(f"Bake size estimation complete. Result: {total_gb:.2f} GB")
 
+    def _update_tooltip(self):
+        """
+        Updates the tooltip's position, content, and visibility based on the
+        mouse cursor's location.
+        """
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Check if the mouse is over the UI panel. If so, hide the tooltip.
+        is_over_ui = self.ui_panel.get_abs_rect().collidepoint(mouse_pos)
+        if is_over_ui:
+            self.tooltip.hide()
+            return
+
+        # Show the tooltip if it was hidden
+        if not self.tooltip.visible:
+            self.tooltip.show()
+
+        # --- Position Update ---
+        self.tooltip.set_position((mouse_pos[0] + 15, mouse_pos[1] + 15))
+
+        # --- Content Update ---
+        world_x, world_y = self.camera.screen_to_world(mouse_pos[0], mouse_pos[1])
+
+        # For performance, only recalculate data if the mouse has moved to a new world pixel.
+        if (int(world_x), int(world_y)) == self.last_mouse_world_pos:
+            return
+        self.last_mouse_world_pos = (int(world_x), int(world_y))
+
+        # Create 1x1 numpy arrays to query the generator for a single point.
+        wx_grid = np.array([[world_x]])
+        wy_grid = np.array([[world_y]])
+
+        # Get raw data for the single point under the cursor.
+        elevation = self.world_generator.get_elevation(wx_grid, wy_grid)[0, 0]
+        temp = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data=np.array([[elevation]]))[0, 0]
+        humidity = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data=np.array([[elevation]]), temperature_data_c=np.array([[temp]]))[0, 0]
+
+        # --- Determine Terrain Type String ---
+        # This logic mirrors the biome model in color_maps.py for a single point.
+        from world_generator import config as DEFAULTS
+        levels = DEFAULTS.TERRAIN_LEVELS
+        thresholds = DEFAULTS.BIOME_THRESHOLDS
+        terrain_type = "Unknown"
+
+        if elevation < levels["water"]:
+            if temp <= DEFAULTS.ICE_FORMATION_TEMP_C:
+                terrain_type = "Ice"
+            else:
+                terrain_type = "Water" # Simplified for tooltip
+        elif temp <= DEFAULTS.SNOW_LINE_TEMP_C:
+            terrain_type = "Snow"
+        elif elevation >= levels["dirt"]:
+             terrain_type = "Mountain"
+        else: # Biome Zone
+            is_barren = (humidity < thresholds["arid_grass_min_humidity_g_m3"]) or \
+                        (temp < thresholds["grass_min_temp_c"]) or \
+                        (temp > thresholds["grass_max_temp_c"])
+            
+            if is_barren:
+                if temp > thresholds["sand_desert_min_temp_c"]:
+                    terrain_type = "Sand Desert"
+                else:
+                    terrain_type = "Barren (Dirt)"
+            elif humidity >= thresholds["lush_grass_min_humidity_g_m3"]:
+                terrain_type = "Lush Grass"
+            elif humidity >= thresholds["normal_grass_min_humidity_g_m3"]:
+                terrain_type = "Grass"
+            else:
+                terrain_type = "Dry Grass"
+
+        # Format the final string and update the tooltip.
+        tooltip_text = (
+            f"Terrain: {terrain_type}\n"
+            f"Temp: {temp:.1f}°C\n"
+            f"Humidity: {humidity:.1f} g/m³"
+        )
+        self.tooltip.set_text(tooltip_text)
+
     def _start_background_bake(self):
         """
         Saves the current configuration and launches the bake_world.py script
@@ -751,6 +844,8 @@ class Application:
 
     def _update(self):
         """Update application state. Runs the performance test if active."""
+        self._update_tooltip()
+
         if not self.is_perf_test_running:
             return
 

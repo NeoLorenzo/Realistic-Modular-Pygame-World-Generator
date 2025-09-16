@@ -85,7 +85,7 @@ def init_worker(config, luts, chunk_dirs, view_modes, chunk_res, chunk_size_cm, 
     
     worker_logger = logging.getLogger(f"Worker-{os.getpid()}")
     # Pass the pre-computed map to the worker's generator instance
-    worker_generator = WorldGenerator(config=config, logger=worker_logger, distance_map_data=distance_map_data)
+    worker_generator = WorldGenerator(config=config, logger=worker_logger, distance_map_data=None)
     worker_luts = luts
     worker_chunk_dirs = chunk_dirs
     worker_view_modes = view_modes
@@ -118,7 +118,7 @@ def process_chunk(coords):
     )
 
     temp_data = worker_generator.get_temperature(wx_grid, wy_grid, elevation_data=elevation_data, base_noise=temp_noise)
-    humidity_data = worker_generator.get_humidity(wx_grid, wy_grid, temperature_data_c=temp_data, base_noise=humidity_noise)
+    humidity_data = worker_generator.get_humidity(wx_grid, wy_grid, elevation_data, temperature_data_c=temp_data, base_noise=humidity_noise)
 
     data_map = {"terrain": elevation_data, "temperature": temp_data, "humidity": humidity_data}
     
@@ -126,7 +126,8 @@ def process_chunk(coords):
 
     for mode in worker_view_modes:
         if mode == "terrain":
-            color_array = color_maps.get_terrain_color_array(data_map[mode])
+            # Pass all three climate layers to the function for full biome calculation.
+            color_array = color_maps.get_terrain_color_array(data_map["terrain"], data_map["temperature"], data_map["humidity"])
         elif mode == "temperature":
             color_array = color_maps.get_temperature_color_array(data_map[mode], worker_luts['temp'])
         else: # humidity
@@ -173,9 +174,10 @@ def bake_world(config_path: str):
 
     # --- Prepare data for workers ---
     distance_map_data = {
-        'map': main_generator._distance_map,
-        'scale_x': main_generator._distance_map_scale_x,
-        'scale_y': main_generator._distance_map_scale_y
+        'distance_map': main_generator._distance_map,
+        'rain_shadow_map': main_generator._rain_shadow_map,
+        'scale_x': main_generator._map_scale_x,
+        'scale_y': main_generator._map_scale_y
     }
 
     # 4. --- Prepare Output Directories ---

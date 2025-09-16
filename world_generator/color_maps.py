@@ -23,7 +23,11 @@ COLOR_MAP_TERRAIN = {
     "mid_water": (20, 40, 120),   # Medium
     "shallow_water": (26, 102, 255), # Shallowest
     "sand": (240, 230, 140),
+    # "grass" is now the "normal" grass color
     "grass": (34, 139, 34),
+    # New grass variants for different biomes
+    "grass_lush": (0, 100, 0),
+    "grass_dry": (154, 205, 50),
     "dirt": (139, 69, 19),
     "mountain": (112, 128, 144)
 }
@@ -40,6 +44,12 @@ COLOR_MAP_HUMIDITY = {
     "dry": (210, 180, 140),
     "wet": (70, 130, 180)
 }
+
+# Define a single, constant color for snow (Rule 1).
+COLOR_SNOW = (255, 255, 255)
+
+# Define a constant color for sea ice. A light blue-grey distinguishes it from snow.
+COLOR_ICE = (210, 225, 240)
 
 HUMIDITY_STEPS = 100 # The number of discrete steps for the humidity map
 
@@ -69,73 +79,98 @@ def create_humidity_lut() -> np.ndarray:
     return colors.astype(np.uint8)
 
 # --- Color Array Generation Functions ---
-def get_terrain_color_array(elevation_values: np.ndarray) -> np.ndarray:
+def get_terrain_color_array(elevation_values: np.ndarray, temperature_values: np.ndarray, humidity_values: np.ndarray) -> np.ndarray:
     """
-    Converts an array of elevation data into an RGB color array using
-    4 distinct levels for water depth.
+    Converts elevation, temperature, and humidity data into an RGB color array,
+    applying a full biome model for ground cover.
     """
     color_map = COLOR_MAP_TERRAIN
     levels = DEFAULTS.TERRAIN_LEVELS
-
-    # Define the elevation boundaries for land terrain types only.
-    # These values represent the upper bound of each category.
+    thresholds = DEFAULTS.BIOME_THRESHOLDS
     water_level = levels["water"]
-    land_bins = [
-        levels["sand"],
-        levels["grass"],
-        levels["dirt"]
-    ]
-    
-    # Define a corresponding color lookup table for land. The order must match
-    # the categories defined by the bins: sand, grass, dirt, and finally mountain
-    # for everything above the last bin.
+
+    # 1. --- Base Elevation Coloring ---
+    # First, establish the fundamental terrain based on elevation.
+    land_bins = [levels["sand"], levels["grass"], levels["dirt"]]
     land_color_lookup = np.array([
-        color_map["sand"],
-        color_map["grass"],
-        color_map["dirt"],
-        color_map["mountain"]
+        color_map["sand"], color_map["grass"], color_map["dirt"], color_map["mountain"]
     ], dtype=np.uint8)
 
-    # --- Land Color Calculation ---
-    # Initialize a color array filled with a default (e.g., abyss color).
     colors = np.full(elevation_values.shape + (3,), color_map["abyss"], dtype=np.uint8)
-    
-    # Create a mask for all land pixels.
     land_mask = elevation_values >= water_level
-    
-    # Digitize and color only the land pixels.
     if np.any(land_mask):
         land_elevations = elevation_values[land_mask]
         indices = np.digitize(land_elevations, bins=land_bins)
         colors[land_mask] = land_color_lookup[indices]
 
-    # --- Water Color Calculation (4 Levels) ---
-    # Create a mask for all water pixels.
     water_mask = ~land_mask
     if np.any(water_mask):
-        # 1. Define the elevation boundaries for the 4 water depths.
-        water_bins = [
-            water_level * 0.25,  # Upper bound for abyss
-            water_level * 0.50,  # Upper bound for deep_water
-            water_level * 0.75   # Upper bound for mid_water
-        ]
-        
-        # 2. Define a corresponding color lookup table.
+        water_bins = [water_level * 0.25, water_level * 0.50, water_level * 0.75]
         water_color_lookup = np.array([
-            color_map["abyss"],
-            color_map["deep_water"],
-            color_map["mid_water"],
-            color_map["shallow_water"] # Default for elevations > last bin
+            color_map["abyss"], color_map["deep_water"], color_map["mid_water"], color_map["shallow_water"]
+        ], dtype=np.uint8)
+        water_elevations = elevation_values[water_mask]
+        water_indices = np.digitize(water_elevations, bins=water_bins)
+        colors[water_mask] = water_color_lookup[water_indices]
+
+    # 2. --- Climate-Driven Biome Logic (Final Robust Model) ---
+    # This logic overrides the base elevation colors for non-mountain land.
+    biome_zone_mask = (elevation_values >= levels["grass"]) & (elevation_values < levels["mountain"])
+
+    if np.any(biome_zone_mask):
+        # Get climate data for the relevant zone.
+        zone_temps = temperature_values[biome_zone_mask]
+        zone_humidity = humidity_values[biome_zone_mask]
+
+        # Define a color lookup table for the biomes. The order is important.
+        # 0=Dirt, 1=Sand, 2=Dry Grass, 3=Normal Grass, 4=Lush Grass
+        biome_color_lookup = np.array([
+            color_map["dirt"],
+            color_map["sand"],
+            color_map["grass_dry"],
+            color_map["grass"],
+            color_map["grass_lush"]
         ], dtype=np.uint8)
 
-        # 3. Get the elevation values for only the water pixels.
-        water_elevations = elevation_values[water_mask]
-        
-        # 4. Use np.digitize to get an index (0-3) for each water pixel.
-        water_indices = np.digitize(water_elevations, bins=water_bins)
-        
-        # 5. Use the indices to look up the correct color and assign it.
-        colors[water_mask] = water_color_lookup[water_indices]
+        # Define conditions for each biome index. Order matters: harshest conditions first.
+        conditions = [
+            # Condition for Sand (Index 1): Must be hot AND barren.
+            (zone_temps > thresholds["sand_desert_min_temp_c"]) &
+            (zone_humidity < thresholds["normal_grass_min_humidity_g_m3"]),
+
+            # Condition for Dirt (Index 0): Barren due to temp or humidity.
+            (zone_humidity < thresholds["arid_grass_min_humidity_g_m3"]) |
+            (zone_temps < thresholds["grass_min_temp_c"]) |
+            (zone_temps > thresholds["grass_max_temp_c"]),
+
+            # Condition for Lush Grass (Index 4): Very humid.
+            (zone_humidity >= thresholds["lush_grass_min_humidity_g_m3"]),
+
+            # Condition for Normal Grass (Index 3): Moderately humid.
+            (zone_humidity >= thresholds["normal_grass_min_humidity_g_m3"])
+        ]
+
+        # Define the corresponding biome index for each condition.
+        choices = [1, 0, 4, 3]
+
+        # Use np.select. The default is Dry Grass (Index 2), the mildest non-normal condition.
+        biome_indices = np.select(conditions, choices, default=2)
+
+        # Use the generated indices to get the final colors from the lookup table.
+        biome_colors = biome_color_lookup[biome_indices]
+
+        # Apply the final calculated biome colors back to the main color array.
+        colors[biome_zone_mask] = biome_colors
+
+    # 3. --- Final Frost and Ice Layers ---
+    # These are applied last, overlaying all other biome logic.
+    ice_mask = (temperature_values <= DEFAULTS.ICE_FORMATION_TEMP_C) & water_mask
+    if np.any(ice_mask):
+        colors[ice_mask] = COLOR_ICE
+
+    snow_mask = (temperature_values <= DEFAULTS.SNOW_LINE_TEMP_C) & land_mask
+    if np.any(snow_mask):
+        colors[snow_mask] = COLOR_SNOW
 
     return np.transpose(colors, (1, 0, 2))
 

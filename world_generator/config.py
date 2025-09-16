@@ -93,6 +93,47 @@ POLAR_TEMPERATURE_DROP_C = 30.0
 # 0.5 is the default, placing it in the middle.
 EQUATOR_Y_POS_FACTOR = 0.5
 
+# The temperature in Celsius at or below which snow will appear on land.
+# 0.0 is the freezing point of water, a realistic default (Rule 3).
+SNOW_LINE_TEMP_C = 0.0
+
+# The temperature in Celsius at or below which water will turn to ice.
+# Set slightly below 0.0 to account for water's thermal properties.
+ICE_FORMATION_TEMP_C = -2.0
+
+
+# --- Prevailing Winds & Rain Shadow (Rule 8) ---
+# The global direction from which the wind blows, in degrees (0=E, 90=N, 180=W, 270=S).
+# A westerly wind (coming from the west) is a common mid-latitude pattern on Earth.
+PREVAILING_WIND_DIRECTION_DEGREES = 180.0
+
+# The distance in km that is checked "upwind" to see if mountains are blocking moisture.
+RAIN_SHADOW_CHECK_DISTANCE_KM = 200.0
+
+# The strength of the rain shadow effect. 0.0 means no effect, 1.0 is a very strong effect.
+RAIN_SHADOW_STRENGTH = 0.8
+
+# The minimum height difference (normalized elevation) to be considered a mountain for occlusion.
+RAIN_SHADOW_MOUNTAIN_THRESHOLD = 0.3
+
+
+# --- Biome Thresholds (Rule 3 & 8) ---
+# A dictionary to hold all climate parameters that define biome transitions.
+BIOME_THRESHOLDS = {
+    # Temperature range for any grass to survive.
+    "grass_min_temp_c": -5.0,
+    "grass_max_temp_c": 40.0,
+
+    # Humidity thresholds defining biome type. These are now clear bands.
+    "lush_grass_min_humidity_g_m3": 12.0,  # Above this -> Lush Grass
+    "normal_grass_min_humidity_g_m3": 4.0, # Above this -> Normal Grass
+    "arid_grass_min_humidity_g_m3": 2.0,   # Below this -> No Grass (Dirt)
+                                           # Between 2.0 and 4.0 -> Dry Grass
+
+    # Temperature at which arid/barren land becomes sand desert.
+    "sand_desert_min_temp_c": 35.0
+}
+
 
 # --- Humidity Realism Constants (Rule 3 & 8) ---
 
@@ -103,6 +144,11 @@ DISTANCE_MAP_RESOLUTION_FACTOR = 0.1
 # The maximum distance (in km) from a water source that influences humidity.
 # Beyond this distance, the land is considered fully arid.
 MAX_COASTAL_DISTANCE_KM = 150.0
+
+# A power factor for the coastal humidity falloff.
+# Values > 1.0 make humidity drop off very quickly near the coast.
+# Values < 1.0 create a more gradual, gentle slope.
+HUMIDITY_COASTAL_FALLOFF_RATE = 2.5
 
 # The absolute min/max humidity in grams of water per cubic meter of air.
 # Used for the real-world model and for renderer normalization.
