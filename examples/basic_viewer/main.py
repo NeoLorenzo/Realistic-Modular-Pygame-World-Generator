@@ -94,6 +94,11 @@ class Application:
         self.world_params_dirty = True # Flag to trigger regeneration
         # This will hold the result of the bake size analysis.
         self.estimated_uniform_ratio = 0.0
+        # This will hold the raw data arrays for the live preview, allowing the
+        # tooltip to sample from the exact same data the renderer uses.
+        self.live_preview_elevation_data = None
+        self.live_preview_temp_data = None
+        self.live_preview_humidity_data = None
         # Pre-compute color LUTs once to avoid doing it every frame (Rule 11)
         self.temp_lut = color_maps.create_temperature_lut()
         self.humidity_lut = color_maps.create_humidity_lut()
@@ -651,6 +656,11 @@ class Application:
         temp_data = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data)
         humidity_data = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data, temp_data)
 
+        # Cache the raw data arrays for the tooltip to use.
+        self.live_preview_elevation_data = elevation_data
+        self.live_preview_temp_data = temp_data
+        self.live_preview_humidity_data = humidity_data
+
         # Select the correct color map based on the current view mode.
         if self.view_mode == "terrain":
             # Pass all three climate layers to the terrain color function
@@ -758,53 +768,50 @@ class Application:
             return
         self.last_mouse_world_pos = (int(world_x), int(world_y))
         
-        self.logger.debug("--- Tooltip Update Cycle ---")
-        self.logger.debug(f"Screen Pos: {mouse_pos} -> World Pos: ({world_x:.2f}, {world_y:.2f})")
-
-        # Create 1x1 numpy arrays to query the generator for a single point.
-        wx_grid = np.array([[world_x]])
-        wy_grid = np.array([[world_y]])
-
-        # Get raw data for the single point under the cursor.
-        elevation = self.world_generator.get_elevation(wx_grid, wy_grid)[0, 0]
-        temp = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data=np.array([[elevation]]))[0, 0]
-        humidity = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data=np.array([[elevation]]), temperature_data_c=np.array([[temp]]))[0, 0]
-        self.logger.debug(f"Raw Data: Elev={elevation:.3f}, Temp={temp:.1f}C, Humidity={humidity:.1f} g/m3")
-
-        # --- Determine Terrain Type String by Sampling Pixel Color ---
-        # This is the definitive method. It guarantees the tooltip matches the render.
+        # --- Initialize default values ---
+        temp = 0.0
+        humidity = 0.0
         terrain_type = "Unknown"
-        if self.live_preview_surface:
-            surface_w, surface_h = self.live_preview_surface.get_size()
-            
-            # Convert world coordinates to pixel coordinates on the preview surface
-            px = int((world_x / self.world_generator.world_width_cm) * surface_w)
-            py = int((world_y / self.world_generator.world_height_cm) * surface_h)
-            self.logger.debug(f"Preview Surface Coords: ({px}, {py})")
 
-            # Ensure the coordinates are within the surface bounds
-            if 0 <= px < surface_w and 0 <= py < surface_h:
-                # Get the color from the already-rendered surface
-                sampled_rgba = self.live_preview_surface.get_at((px, py))
+        # --- Sample Data from Cached Preview Arrays ---
+        # This is the definitive method. It guarantees the tooltip matches the render.
+        if self.live_preview_surface and self.live_preview_humidity_data is not None:
+            # Get the dimensions of the data array and the surface
+            data_h, data_w = self.live_preview_humidity_data.shape
+            surface_w, surface_h = self.live_preview_surface.get_size()
+
+            # Convert world coordinates to pixel coordinates on the preview data grid
+            px_data = int((world_x / self.world_generator.world_width_cm) * data_w)
+            py_data = int((world_y / self.world_generator.world_height_cm) * data_h)
+
+            # Ensure data coordinates are within bounds for sampling raw values
+            if 0 <= px_data < data_w and 0 <= py_data < data_h:
+                # Sample the raw data values directly from the pre-computed arrays.
+                # NumPy arrays are indexed (row, col), which corresponds to (y, x).
+                temp = self.live_preview_temp_data[py_data, px_data]
+                humidity = self.live_preview_humidity_data[py_data, px_data]
+
+            # --- Determine Terrain Type String by Sampling Pixel Color ---
+            # Convert world coordinates to pixel coordinates on the preview surface
+            px_surf = int((world_x / self.world_generator.world_width_cm) * surface_w)
+            py_surf = int((world_y / self.world_generator.world_height_cm) * surface_h)
+
+            # Ensure surface coordinates are within bounds for sampling color
+            if 0 <= px_surf < surface_w and 0 <= py_surf < surface_h:
+                sampled_rgba = self.live_preview_surface.get_at((px_surf, py_surf))
                 sampled_rgb = tuple(sampled_rgba[:3])
-                self.logger.debug(f"Sampled Color: {sampled_rgb}")
 
                 # First, try a direct, fast lookup
                 terrain_type = self.color_to_terrain_map.get(sampled_rgb)
-                self.logger.debug(f"Direct Lookup Result: '{terrain_type}'")
 
                 # If not found (due to scaling interpolation), find the nearest known color
                 if terrain_type is None:
-                    self.logger.debug("Direct lookup failed, finding nearest color...")
                     distances = np.sum((self.known_colors_array - sampled_rgb)**2, axis=1)
                     closest_color_index = np.argmin(distances)
                     closest_color = self.known_colors_list[closest_color_index]
                     terrain_type = self.color_to_terrain_map[closest_color]
-                    self.logger.debug(f"Nearest Color Result: '{terrain_type}' (from color {closest_color})")
         
         # Format the final string as simple HTML and update the tooltip.
-        # The UITextBox element uses HTML, so we use <br> for line breaks.
-        # It will handle all resizing automatically.
         tooltip_text = (
             f"<b>Terrain:</b> {terrain_type}<br>"
             f"<b>Temp:</b> {temp:.1f}°C<br>"
@@ -812,12 +819,7 @@ class Application:
         )
         self.tooltip.set_text(tooltip_text)
         
-        # The UITextBox, when initialized with height=-1, handles its own resizing
-        # when set_text() is called. All manual resizing/dimensioning code has
-        # been removed as it was incorrect and causing conflicts.
-        
-        # Now that the text is set and the box has auto-resized, we can
-        # correctly position it and ensure it's visible.
+        # The UITextBox handles its own resizing and positioning.
         self.tooltip.set_position((mouse_pos[0] + 15, mouse_pos[1] + 15))
         if not self.tooltip.visible:
             self.tooltip.show()

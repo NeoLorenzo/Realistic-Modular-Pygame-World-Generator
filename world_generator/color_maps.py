@@ -115,9 +115,10 @@ def get_terrain_color_array(elevation_values: np.ndarray, temperature_values: np
 
     # 2. --- Climate-Driven Biome Logic (Final Robust Model) ---
     # This logic overrides the base elevation colors for non-mountain land.
-    # This mask is now correctly scoped to the "grass" and "dirt" elevation bands,
-    # preventing it from overwriting the "mountain" colors at higher elevations.
-    biome_zone_mask = (elevation_values >= levels["grass"]) & (elevation_values < levels["dirt"])
+    # This mask now covers all land from the end of the sand/beach level up
+    # to the start of the mountain level. This is critical to ensure that
+    # low-lying grasslands are correctly converted to desert in arid climates.
+    biome_zone_mask = (elevation_values >= levels["sand"]) & (elevation_values < levels["dirt"])
 
     if np.any(biome_zone_mask):
         # Get climate data for the relevant zone.

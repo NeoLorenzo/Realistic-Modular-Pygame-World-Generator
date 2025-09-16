@@ -111,14 +111,9 @@ def process_chunk(coords):
         seed_offset=worker_generator.settings['temp_seed_offset'],
         scale=worker_generator.settings['climate_noise_scale']
     )
-    humidity_noise = worker_generator._generate_base_noise(
-        wx_grid, wy_grid,
-        seed_offset=worker_generator.settings['humidity_seed_offset'],
-        scale=worker_generator.settings['climate_noise_scale']
-    )
 
     temp_data = worker_generator.get_temperature(wx_grid, wy_grid, elevation_data=elevation_data, base_noise=temp_noise)
-    humidity_data = worker_generator.get_humidity(wx_grid, wy_grid, elevation_data, temperature_data_c=temp_data, base_noise=humidity_noise)
+    humidity_data = worker_generator.get_humidity(wx_grid, wy_grid, elevation_data, temperature_data_c=temp_data)
 
     data_map = {"terrain": elevation_data, "temperature": temp_data, "humidity": humidity_data}
     

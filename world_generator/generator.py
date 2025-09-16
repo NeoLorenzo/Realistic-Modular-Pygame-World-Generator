@@ -52,7 +52,6 @@ class WorldGenerator:
         self.settings = {
             'seed': self.user_config.get('seed', DEFAULTS.DEFAULT_SEED),
             'temp_seed_offset': self.user_config.get('temp_seed_offset', DEFAULTS.TEMP_SEED_OFFSET),
-            'humidity_seed_offset': self.user_config.get('humidity_seed_offset', DEFAULTS.HUMIDITY_SEED_OFFSET),
             'detail_seed_offset': self.user_config.get('detail_seed_offset', DEFAULTS.DETAIL_SEED_OFFSET),
             
             # Load human-readable feature scales (in km)
@@ -265,7 +264,7 @@ class WorldGenerator:
         # Return the distance values from the map.
         return self._distance_map[map_y, map_x]
 
-    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray, elevation_data: np.ndarray, temperature_data_c: np.ndarray, base_noise: np.ndarray = None) -> np.ndarray:
+    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray, elevation_data: np.ndarray, temperature_data_c: np.ndarray) -> np.ndarray:
         """
         Generates absolute humidity (g/m³) via on-the-fly analysis of the
         final elevation data. This ensures humidity is always perfectly
@@ -307,19 +306,10 @@ class WorldGenerator:
         shadow_factor = 1.0 - (shadow_map * self.settings['rain_shadow_strength'])
 
         # e) Combine factors to get relative humidity.
-        base_relative_humidity = coastal_factor * shadow_factor
+        # This is now the final, deterministic relative humidity.
+        final_relative_humidity = np.clip(coastal_factor * shadow_factor, 0, 1)
 
         # 2. --- Final Humidity Calculation ---
-        if base_noise is None:
-            humidity_noise = self._generate_base_noise(
-                x_coords, y_coords,
-                seed_offset=self.settings['humidity_seed_offset'],
-                scale=self.settings['climate_noise_scale']
-            )
-        else:
-            humidity_noise = base_noise
-        
-        final_relative_humidity = np.clip(base_relative_humidity * humidity_noise, 0, 1)
         saturation_humidity = 5.0 * np.exp(temperature_data_c / 15.0)
         final_humidity_g_m3 = saturation_humidity * final_relative_humidity
 

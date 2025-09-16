@@ -18,7 +18,7 @@ DEFAULT_SEED = 1337
 # Large prime numbers used to offset seeds for different layers, ensuring
 # they are unique but deterministic from the master seed.
 TEMP_SEED_OFFSET = 12347
-HUMIDITY_SEED_OFFSET = 54323
+# HUMIDITY_SEED_OFFSET is deprecated as humidity is now deterministic.
 DETAIL_SEED_OFFSET = 98761 # New offset for the detail layer
 
 # --- Unit Conversion ---
@@ -152,7 +152,7 @@ HUMIDITY_COASTAL_FALLOFF_RATE = 2.5
 
 # The absolute min/max humidity in grams of water per cubic meter of air.
 # Used for the real-world model and for renderer normalization.
-MIN_ABSOLUTE_HUMIDITY_G_M3 = 0.1
+MIN_ABSOLUTE_HUMIDITY_G_M3 = 0.0
 MAX_ABSOLUTE_HUMIDITY_G_M3 = 30.0
 
 # --- Rendering & Performance ---
