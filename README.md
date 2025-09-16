@@ -208,7 +208,15 @@ world_gen = WorldGenerator(config=my_config, logger=logger)
 
 ## Roadmap & Future Features
 
+*   **Project Unification: Editor & Baker Integration:** A focused effort to transform the project from a developer's library into a single, cohesive, user-centric world creation application. This involves several key architectural and UI enhancements:
+    *   **Application-Centric Restructuring:** Reorganize the project's file structure to present a clear "single application" identity. This includes renaming `examples/basic_viewer` to `editor/` and moving the `bake_world.py` script inside it to consolidate all application-specific logic.
+    *   **Seamless Baker Integration:** Replace the current `subprocess` call with a fully integrated, multi-threaded baking process. The baker will run on a background thread, ensuring the main editor UI remains fluid and responsive at all times.
+    *   **Rich UI Feedback for Baking:** Implement a robust communication channel between the baker thread and the main UI. This will power new UI elements, including a live progress bar and status messages ("Bake Complete!", "Error!"), providing a transparent and user-friendly experience.
+    *   **Formalize the "Plug-and-Play" Baked World Package:** Standardize the output of the baker into a self-contained package. Each baked world will be a single folder containing the chunk images, the manifest, and a copy of the `world_config.json` used to generate it, making it truly modular and ready for any external project.
+    *   **Documentation Overhaul:** Update all project documentation, particularly the README, to reflect the new unified architecture, simplified user workflow, and the formal structure of the baked world package.
+
 *   **Baked World Viewer Mode:** The logical counterpart to the baker. A new application mode to load and explore a pre-baked world at maximum performance and detail.
+*   **Configurable Bake Resolution (Maximum Detail):** Implement a system allowing the user to define the output resolution of the baked world via the UI. This will enable baking at ultra-high-fidelity levels (e.g., 10 pixels per meter or higher) for projects requiring maximum visual detail for cinematic or scientific purposes, while also allowing for lower-resolution bakes for rapid prototyping. This feature will directly control the `CHUNK_RESOLUTION` constant and transparently communicate the trade-offs (bake time, file size) to the user.
 *   **Advanced Biome Detailing:** A system to classify areas into more specific biomes (e.g., Tundra, Desert, Rainforest) and potentially spawn representative flora or features.
 *   **Hydraulic Erosion & River Networks:** An algorithm to simulate water flow, carving rivers from mountains to the sea.
 
