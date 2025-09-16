@@ -2,7 +2,7 @@
 
 A standalone Python library and interactive design tool for generating complex, scientifically-grounded worlds. Designed from the ground up for modularity, performance, and realism, this package allows developers to seamlessly integrate a powerful world-generation engine into any Python-based simulation, game, or project.
 
-The core philosophy is to create a data-first engine that produces emergent, believable climate systems based on interconnected physical principles, rather than disconnected layers of noise. The new interactive editor allows for rapid iteration and design before committing to a final, high-performance "baked" world.
+The core philosophy is to create a data-first engine that produces emergent, believable climate systems based on interconnected physical principles. The world now features a dynamic climate model with **prevailing winds**, **rain shadows**, and **climate-driven biomes**, creating realistic deserts and varied grasslands. The interactive editor allows for rapid iteration and design before committing to a final, high-performance "baked" world.
 
 ## Table of Contents
 
@@ -40,11 +40,11 @@ The generator is architected as a self-contained Python package (`world_generato
 
 ### 2. Scientifically-Grounded Realism
 
-The goal is to generate worlds with believable and emergent characteristics. Climate is an emergent property of the terrain, with temperature affected by altitude (adiabatic lapse rate) and humidity driven by a pre-calculated **distance-to-water map**.
+The goal is to generate worlds with believable and emergent characteristics. Climate is an emergent property of the terrain, with temperature affected by altitude (adiabatic lapse rate) and humidity driven by **prevailing winds**, **rain shadows**, and distance from water. This creates realistic biomes, from lush jungles to arid deserts, that are a direct consequence of the underlying physics.
 
 ### 3. Rapid, Interactive Design
 
-The project is more than just a generator; it's a design tool. The **Live Edit Mode** provides a real-time, full-world preview that updates instantly as you adjust parameters via a UI, allowing for fast iteration and creative exploration.
+The project is more than just a generator; it's a design tool. The **Live Edit Mode** provides a real-time, full-world preview that updates instantly as you adjust parameters, allowing for fast iteration. A new **real-time data tooltip** provides direct quantitative feedback on the climate at any point on the map.
 
 ### 4. Efficiency and Performance
 
@@ -94,15 +94,19 @@ When you are satisfied with your world design in the editor, you can use the "Ba
 
 ### The Generation Pipeline: From Seed to Climate
 
-The underlying data generation remains the same, ensuring a realistic foundation. The pipeline is always executed in this order:
-1.  **Elevation:** The foundational terrain.
-2.  **Distance-to-Water (Pre-computed):** Enables realistic coastal climates.
-3.  **Temperature (Celsius):** A function of noise, altitude, and latitude.
-4.  **Humidity (Absolute, g/m³):** An emergent property of temperature and distance from water.
+The underlying data generation is now fully dynamic to ensure that all climate effects respond in real-time to terrain changes in the editor. The pipeline is always executed in this order for every frame:
+1.  **Elevation:** The foundational terrain is generated. This is the single source of truth for the frame.
+2.  **Temperature (Celsius):** Calculated as a function of noise, altitude, and latitude.
+3.  **Humidity (Absolute, g/m³):** This is now an emergent property calculated **on-the-fly** from the final elevation and temperature data:
+    *   **Water Sources:** The system first identifies all bodies of water based on the final elevation map.
+    *   **Distance-to-Water:** A distance map is calculated in real-time.
+    *   **Rain Shadow:** A moisture occlusion map is calculated based on prevailing winds and mountain ranges.
+    *   **Final Humidity:** The absolute humidity is determined by combining the air's temperature-driven capacity for moisture with the environment's availability of moisture (from coasts and rain shadows).
+4.  **Biome & Final Colors:** The final terrain color (ice, snow, lush grass, sand desert, etc.) is determined by applying a set of prioritized rules based on the final elevation, temperature, and humidity.
 
 ## Configuration Deep Dive
 
-The Live Editor allows you to modify these key parameters from `world_generator/config.py` in real-time:
+The Live Editor allows you to modify key parameters in real-time. Other advanced parameters can be tuned in `world_generator/config.py`.
 
 | Parameter                         | Unit    | Default | UI Control        | Description                                                                                                                            |
 | --------------------------------- | ------- | ------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
@@ -114,10 +118,15 @@ The Live Editor allows you to modify these key parameters from `world_generator/
 | `POLAR_TEMPERATURE_DROP_C`        | Celsius | `30.0`  | Slider            | The total temperature difference between the equator and the poles.                                                                    |
 | `world_width_chunks`              | chunks  | `800`   | Text Input        | The width of the world in chunks. Requires clicking "Apply Size Changes".                                                              |
 | `world_height_chunks`             | chunks  | `450`   | Text Input        | The height of the world in chunks. Requires clicking "Apply Size Changes".                                                               |
+| `SNOW_LINE_TEMP_C`                | Celsius | `0.0`   | Config File       | The temperature at or below which snow appears on land.                                                                                |
+| `ICE_FORMATION_TEMP_C`            | Celsius | `-2.0`  | Config File       | The temperature at or below which water freezes into ice.                                                                              |
+| `PREVAILING_WIND_DIRECTION_DEGREES` | Degrees | `180.0` | Config File       | The global wind direction (0=E, 90=N, 180=W, 270=S). Controls rain shadows.                                                            |
+| `HUMIDITY_COASTAL_FALLOFF_RATE`   | float   | `2.5`   | Config File       | A power factor for humidity dissipation. Higher values create a very sharp drop-off from the coast.                                    |
+| `BIOME_THRESHOLDS`                | dict    | varies  | Config File       | A dictionary of temperature and humidity values that control all biome transitions (e.g., where lush grass becomes normal grass).      |
 
 ## Performance & Optimization
 
-*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `main.py`. Higher values provide a more detailed preview at the cost of slower regeneration.
+*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `main.py`. The on-the-fly climate calculations are performed on this preview-sized array, maintaining interactivity.
 *   **Baking:** The baking process is a highly optimized, CPU-bound task that is parallelized across all available cores. Its duration is primarily determined by the total number of chunks and the raw processing power of the host machine.
 
 ### The Optimization Journey & Architectural Lessons
@@ -128,7 +137,7 @@ The current high performance of the `bake_world.py` script is the result of a ri
 1.  **Parallelization:** The core task was parallelized using Python's `multiprocessing` module, distributing the work of processing individual chunks across all available CPU cores.
 2.  **Advanced Compression:** A tiered, lossless compression strategy was implemented using the Pillow library. This includes content deduplication via hashing, 1x1 pixel compression for uniform chunks, and 8-bit PNG palettization for low-color chunks, dramatically reducing storage size.
 3.  **Data Quantization:** The smooth gradients of temperature and humidity data were quantized into discrete steps (e.g., one step per degree Celsius). This massively increased the effectiveness of content deduplication with minimal impact on visual quality.
-4.  **Elimination of Redundancy:** The architecture was refactored to ensure expensive calculations (like the global distance-to-water map and per-chunk climate noise maps) are performed only once and their results are reused.
+4.  **On-the-Fly Correctness:** The architecture was refactored to calculate climate data (distance-to-water, rain shadows) in real-time. This fixed a critical architectural flaw where climate was not responding to terrain changes, trading a negligible performance cost for a massive gain in correctness.
 5.  **Low-Level CPU Speedup:** Numba's `fastmath=True` flag was applied to the core Perlin noise functions, allowing the JIT compiler to use faster, less-precise floating-point instructions, which provided a significant speed boost with no perceptible change in the visual output.
 
 **The Failed Approach: Block-Based Processing**
@@ -152,8 +161,7 @@ An attempt was made to further optimize the CPU-bound work by having each worker
     ```sh
     git clone https://github.com/your-username/Realistic-Modular-Pygame-World-Generator.git
     cd Realistic-Modular-Pygame-World-Generator
-    ```
-2.  **Create and activate a virtual environment (recommended):**
+    ```2.  **Create and activate a virtual environment (recommended):**
     ```sh
     python -m venv venv
     # On Windows: venv\Scripts\activate
@@ -172,6 +180,7 @@ An attempt was made to further optimize the CPU-bound work by having each worker
 
 *   **Live Parameter Tuning:** Use the sliders on the right-hand panel to adjust world parameters. The preview will update automatically.
 *   **Custom World Size:** Enter new dimensions (in chunks) into the text boxes and click **"Apply Size Changes"** to re-initialize the world.
+*   **Real-Time Data:** Hover the mouse over the map to see a **real-time data tooltip** showing the terrain type, temperature, and humidity at that exact point.
 *   **Baking Your World:** When you are satisfied with the design, click **"Bake World"**. This will start the fast, offline rendering process in the background. The editor will remain responsive.
 *   **Standard Controls:**
     *   **Pan:** `W`, `A`, `S`, `D` keys
@@ -200,8 +209,7 @@ world_gen = WorldGenerator(config=my_config, logger=logger)
 ## Roadmap & Future Features
 
 *   **Baked World Viewer Mode:** The logical counterpart to the baker. A new application mode to load and explore a pre-baked world at maximum performance and detail.
-*   **Biome Generation:** A system to classify areas based on their final elevation, temperature, and humidity into distinct biomes (e.g., Tundra, Desert, Rainforest).
-*   **Prevailing Winds & Rain Shadows:** A model for global wind patterns that would cause the windward side of mountain ranges to be wet and the leeward side to be arid deserts.
+*   **Advanced Biome Detailing:** A system to classify areas into more specific biomes (e.g., Tundra, Desert, Rainforest) and potentially spawn representative flora or features.
 *   **Hydraulic Erosion & River Networks:** An algorithm to simulate water flow, carving rivers from mountains to the sea.
 
 ## Architectural Principles

@@ -111,6 +111,7 @@ class Application:
         )
 
         self._setup_ui()
+        self._create_reverse_color_map()
 
         # --- Profiling Setup (Rule 11) ---
         self.profiler = None
@@ -404,11 +405,13 @@ class Application:
         )
 
         # --- Tooltip Initialization ---
-        # Create the tooltip label but keep it hidden initially.
-        # It's not attached to the panel, so it can float over the whole screen.
-        self.tooltip = pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(0, 0, 220, 70), # Initial size, will be adjusted
-            text="",
+        # Create the tooltip using a UITextBox, which is the correct element for
+        # handling dynamic, multi-line content. It will resize automatically.
+        # A width of 250 provides enough space to prevent the layout engine from
+        # crashing when rendering longer text strings like "Humidity:".
+        self.tooltip = pygame_gui.elements.UITextBox(
+            relative_rect=pygame.Rect(0, 0, 250, -1),
+            html_text="",
             manager=self.ui_manager,
             visible=False
         )
@@ -754,6 +757,9 @@ class Application:
         if (int(world_x), int(world_y)) == self.last_mouse_world_pos:
             return
         self.last_mouse_world_pos = (int(world_x), int(world_y))
+        
+        self.logger.debug("--- Tooltip Update Cycle ---")
+        self.logger.debug(f"Screen Pos: {mouse_pos} -> World Pos: ({world_x:.2f}, {world_y:.2f})")
 
         # Create 1x1 numpy arrays to query the generator for a single point.
         wx_grid = np.array([[world_x]])
@@ -763,47 +769,83 @@ class Application:
         elevation = self.world_generator.get_elevation(wx_grid, wy_grid)[0, 0]
         temp = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data=np.array([[elevation]]))[0, 0]
         humidity = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data=np.array([[elevation]]), temperature_data_c=np.array([[temp]]))[0, 0]
+        self.logger.debug(f"Raw Data: Elev={elevation:.3f}, Temp={temp:.1f}C, Humidity={humidity:.1f} g/m3")
 
-        # --- Determine Terrain Type String ---
-        # This logic mirrors the biome model in color_maps.py for a single point.
-        from world_generator import config as DEFAULTS
-        levels = DEFAULTS.TERRAIN_LEVELS
-        thresholds = DEFAULTS.BIOME_THRESHOLDS
+        # --- Determine Terrain Type String by Sampling Pixel Color ---
+        # This is the definitive method. It guarantees the tooltip matches the render.
         terrain_type = "Unknown"
-
-        if elevation < levels["water"]:
-            if temp <= DEFAULTS.ICE_FORMATION_TEMP_C:
-                terrain_type = "Ice"
-            else:
-                terrain_type = "Water" # Simplified for tooltip
-        elif temp <= DEFAULTS.SNOW_LINE_TEMP_C:
-            terrain_type = "Snow"
-        elif elevation >= levels["dirt"]:
-             terrain_type = "Mountain"
-        else: # Biome Zone
-            is_barren = (humidity < thresholds["arid_grass_min_humidity_g_m3"]) or \
-                        (temp < thresholds["grass_min_temp_c"]) or \
-                        (temp > thresholds["grass_max_temp_c"])
+        if self.live_preview_surface:
+            surface_w, surface_h = self.live_preview_surface.get_size()
             
-            if is_barren:
-                if temp > thresholds["sand_desert_min_temp_c"]:
-                    terrain_type = "Sand Desert"
-                else:
-                    terrain_type = "Barren (Dirt)"
-            elif humidity >= thresholds["lush_grass_min_humidity_g_m3"]:
-                terrain_type = "Lush Grass"
-            elif humidity >= thresholds["normal_grass_min_humidity_g_m3"]:
-                terrain_type = "Grass"
-            else:
-                terrain_type = "Dry Grass"
+            # Convert world coordinates to pixel coordinates on the preview surface
+            px = int((world_x / self.world_generator.world_width_cm) * surface_w)
+            py = int((world_y / self.world_generator.world_height_cm) * surface_h)
+            self.logger.debug(f"Preview Surface Coords: ({px}, {py})")
 
-        # Format the final string and update the tooltip.
+            # Ensure the coordinates are within the surface bounds
+            if 0 <= px < surface_w and 0 <= py < surface_h:
+                # Get the color from the already-rendered surface
+                sampled_rgba = self.live_preview_surface.get_at((px, py))
+                sampled_rgb = tuple(sampled_rgba[:3])
+                self.logger.debug(f"Sampled Color: {sampled_rgb}")
+
+                # First, try a direct, fast lookup
+                terrain_type = self.color_to_terrain_map.get(sampled_rgb)
+                self.logger.debug(f"Direct Lookup Result: '{terrain_type}'")
+
+                # If not found (due to scaling interpolation), find the nearest known color
+                if terrain_type is None:
+                    self.logger.debug("Direct lookup failed, finding nearest color...")
+                    distances = np.sum((self.known_colors_array - sampled_rgb)**2, axis=1)
+                    closest_color_index = np.argmin(distances)
+                    closest_color = self.known_colors_list[closest_color_index]
+                    terrain_type = self.color_to_terrain_map[closest_color]
+                    self.logger.debug(f"Nearest Color Result: '{terrain_type}' (from color {closest_color})")
+        
+        # Format the final string as simple HTML and update the tooltip.
+        # The UITextBox element uses HTML, so we use <br> for line breaks.
+        # It will handle all resizing automatically.
         tooltip_text = (
-            f"Terrain: {terrain_type}\n"
-            f"Temp: {temp:.1f}°C\n"
-            f"Humidity: {humidity:.1f} g/m³"
+            f"<b>Terrain:</b> {terrain_type}<br>"
+            f"<b>Temp:</b> {temp:.1f}°C<br>"
+            f"<b>Humidity:</b> {humidity:.1f} g/m3"
         )
         self.tooltip.set_text(tooltip_text)
+        
+        # The UITextBox, when initialized with height=-1, handles its own resizing
+        # when set_text() is called. All manual resizing/dimensioning code has
+        # been removed as it was incorrect and causing conflicts.
+        
+        # Now that the text is set and the box has auto-resized, we can
+        # correctly position it and ensure it's visible.
+        self.tooltip.set_position((mouse_pos[0] + 15, mouse_pos[1] + 15))
+        if not self.tooltip.visible:
+            self.tooltip.show()
+        
+    def _create_reverse_color_map(self):
+        """
+        Creates a mapping from RGB color tuples to terrain name strings.
+        This is used by the tooltip to identify terrain by sampling pixel colors.
+        It also handles cases where scaling might slightly alter colors by finding
+        the "closest" known color.
+        """
+        from world_generator import color_maps
+        
+        # Create a simple forward map from the constants file
+        forward_map = {
+            **color_maps.COLOR_MAP_TERRAIN,
+            "snow": color_maps.COLOR_SNOW,
+            "ice": color_maps.COLOR_ICE
+        }
+        
+        # Invert the map and format the names
+        self.color_to_terrain_map = {
+            tuple(v): k.replace("_", " ").title() for k, v in forward_map.items()
+        }
+        
+        # Store the raw color values for our "nearest color" calculation
+        self.known_colors_list = list(self.color_to_terrain_map.keys())
+        self.known_colors_array = np.array(self.known_colors_list)
 
     def _start_background_bake(self):
         """
