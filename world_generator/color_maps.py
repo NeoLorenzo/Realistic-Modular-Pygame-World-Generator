@@ -79,10 +79,13 @@ def create_humidity_lut() -> np.ndarray:
     return colors.astype(np.uint8)
 
 # --- Color Array Generation Functions ---
-def get_terrain_color_array(elevation_values: np.ndarray, temperature_values: np.ndarray, humidity_values: np.ndarray) -> np.ndarray:
+# A new constant to define what counts as "no soil" for rendering purposes.
+EXPOSED_ROCK_SOIL_THRESHOLD = 0.001
+
+def get_terrain_color_array(elevation_values: np.ndarray, temperature_values: np.ndarray, humidity_values: np.ndarray, soil_depth_data: np.ndarray) -> np.ndarray:
     """
     Converts elevation, temperature, and humidity data into an RGB color array,
-    applying a full biome model for ground cover.
+    applying a full biome model for ground cover that is aware of soil depth.
     """
     color_map = COLOR_MAP_TERRAIN
     levels = DEFAULTS.TERRAIN_LEVELS
@@ -113,12 +116,18 @@ def get_terrain_color_array(elevation_values: np.ndarray, temperature_values: np
         water_indices = np.digitize(water_elevations, bins=water_bins)
         colors[water_mask] = water_color_lookup[water_indices]
 
-    # 2. --- Climate-Driven Biome Logic (Final Robust Model) ---
-    # This logic overrides the base elevation colors for non-mountain land.
-    # This mask now covers all land from the end of the sand/beach level up
-    # to the start of the mountain level. This is critical to ensure that
-    # low-lying grasslands are correctly converted to desert in arid climates.
-    biome_zone_mask = (elevation_values >= levels["sand"]) & (elevation_values < levels["dirt"])
+    # 2. --- Bedrock Exposure Layer ---
+    # On land, any area with virtually no soil should be rendered as rock,
+    # overriding all other biome logic except snow/ice.
+    exposed_rock_mask = (soil_depth_data < EXPOSED_ROCK_SOIL_THRESHOLD) & land_mask
+    if np.any(exposed_rock_mask):
+        colors[exposed_rock_mask] = color_map["mountain"]
+
+    # 3. --- Climate-Driven Biome Logic (Final Robust Model) ---
+    # This logic now only applies to areas that have soil and are not exposed rock.
+    biome_zone_mask = (elevation_values >= levels["sand"]) & \
+                      (elevation_values < levels["dirt"]) & \
+                      ~exposed_rock_mask
 
     if np.any(biome_zone_mask):
         # Get climate data for the relevant zone.

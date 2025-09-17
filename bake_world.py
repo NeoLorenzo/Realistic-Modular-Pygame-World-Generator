@@ -104,14 +104,18 @@ def process_chunk(coords):
     wy = wy_template + (cy * worker_chunk_size_cm)
     wx_grid, wy_grid = np.meshgrid(wx, wy)
 
+    # Generate all terrain layers to get access to the soil depth map.
+    bedrock_data = worker_generator._get_bedrock_elevation(wx_grid, wy_grid)
+    slope_data = worker_generator._get_slope(bedrock_data)
+    soil_depth_data = worker_generator._get_soil_depth(slope_data)
     elevation_data = worker_generator.get_elevation(wx_grid, wy_grid)
-    
+
+    # Generate climate data based on the final elevation.
     temp_noise = worker_generator._generate_base_noise(
         wx_grid, wy_grid,
         seed_offset=worker_generator.settings['temp_seed_offset'],
         scale=worker_generator.settings['climate_noise_scale']
     )
-
     temp_data = worker_generator.get_temperature(wx_grid, wy_grid, elevation_data=elevation_data, base_noise=temp_noise)
     humidity_data = worker_generator.get_humidity(wx_grid, wy_grid, elevation_data, temperature_data_c=temp_data)
     tectonic_uplift = worker_generator.get_tectonic_uplift(wx_grid, wy_grid)
@@ -127,8 +131,13 @@ def process_chunk(coords):
 
     for mode in worker_view_modes:
         if mode == "terrain":
-            # Pass all three climate layers to the function for full biome calculation.
-            color_array = color_maps.get_terrain_color_array(data_map["terrain"], data_map["temperature"], data_map["humidity"])
+            # Pass the new soil_depth_data to the terrain color function.
+            color_array = color_maps.get_terrain_color_array(
+                data_map["terrain"],
+                data_map["temperature"],
+                data_map["humidity"],
+                soil_depth_data  # Pass the crucial new layer
+            )
         elif mode == "temperature":
             color_array = color_maps.get_temperature_color_array(data_map["temperature"], worker_luts['temp'])
         elif mode == "humidity":

@@ -61,7 +61,7 @@ class Application:
         self._setup_pygame()
 
                 # --- State ---
-        self.view_modes = ["terrain", "temperature", "humidity", "elevation", "tectonic"]
+        self.view_modes = ["terrain", "temperature", "humidity", "elevation", "tectonic", "soil_depth"]
         self.current_view_mode_index = 0
         self.view_mode = self.view_modes[self.current_view_mode_index]
         self.frame_count = 0
@@ -390,7 +390,7 @@ class Application:
         self.tectonic_strength_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
             start_value=world_settings.get('mountain_uplift_strength', 0.8),
-            value_range=(0.0, 2.0),
+            value_range=(0.0, 5.0),
             manager=self.ui_manager,
             container=self.ui_panel
         )
@@ -751,8 +751,17 @@ class Application:
         wy = np.linspace(0, self.world_generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
         wx_grid, wy_grid = np.meshgrid(wx, wy)
 
-        # Generate all data layers first to allow for reuse (Rule 11).
+        # --- Generate all data layers first to allow for reuse (Rule 11) ---
+        # We now call the internal methods to get access to the intermediate layers
+        # needed for the new soil-aware rendering.
+        bedrock_data = self.world_generator._get_bedrock_elevation(wx_grid, wy_grid)
+        slope_data = self.world_generator._get_slope(bedrock_data)
+        soil_depth_data = self.world_generator._get_soil_depth(slope_data)
+        
+        # The final elevation is the bedrock plus the soil.
         elevation_data = self.world_generator.get_elevation(wx_grid, wy_grid)
+
+        # Climate is calculated based on the FINAL combined elevation.
         temp_data = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data)
         humidity_data = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data, temp_data)
 
@@ -763,22 +772,33 @@ class Application:
 
         # Select the correct color map based on the current view mode.
         if self.view_mode == "terrain":
-            # Pass all three climate layers to the terrain color function
-            # to allow it to calculate the full biome model.
-            return color_maps.get_terrain_color_array(elevation_data, temp_data, humidity_data)
+            # Pass the new soil_depth_data to the terrain color function.
+            return color_maps.get_terrain_color_array(elevation_data, temp_data, humidity_data, soil_depth_data)
         elif self.view_mode == "temperature":
             return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
         elif self.view_mode == "humidity":
             return color_maps.get_humidity_color_array(humidity_data, self.humidity_lut)
         elif self.view_mode == "elevation":
             return color_maps.get_elevation_color_array(elevation_data)
+        elif self.view_mode == "soil_depth":
+            # This is a temporary debug view to validate the soil depth calculation.
+            bedrock_data = self.world_generator._get_bedrock_elevation(wx_grid, wy_grid)
+            slope_data = self.world_generator._get_slope(bedrock_data)
+            soil_depth_data = self.world_generator._get_soil_depth(slope_data)
+            # We normalize the soil depth for visualization, so the deepest soil is white.
+            max_depth = self.world_generator.settings['max_soil_depth_units']
+            if max_depth > 0:
+                normalized_soil = soil_depth_data / max_depth
+            else:
+                normalized_soil = np.zeros_like(soil_depth_data)
+            return color_maps.get_elevation_color_array(normalized_soil)
         else: # tectonic
             # The tectonic view now shows the actual uplift noise map.
             # This provides direct visual feedback on what is being added to the terrain.
             tectonic_uplift_map = self.world_generator.get_tectonic_uplift(wx_grid, wy_grid)
             
             # We can reuse the elevation color function to render this as grayscale.
-            # We normalize the map first. The new model's output range is [0, 2 * strength].
+            # The new model's output range is [0, 2 * strength].
             strength = self.world_generator.settings['mountain_uplift_strength']
             if strength > 0:
                 # Normalize from [0, 2 * strength] to [0, 1]

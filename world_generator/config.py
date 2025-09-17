@@ -160,6 +160,9 @@ MAX_ABSOLUTE_HUMIDITY_G_M3 = 30.0
 
 # --- Tectonics & Geology (Rule 8) ---
 DEFAULT_NUM_TECTONIC_PLATES = 2
+# The maximum possible depth of soil, in normalized elevation units [0, 1].
+# This is the value added to bedrock in perfectly flat areas.
+MAX_SOIL_DEPTH_UNITS = 0.05
 # The feature scale for the noise that creates the mountain ranges themselves.
 MOUNTAIN_UPLIFT_FEATURE_SCALE_KM = 15.0
 # The radius, in km, around a plate boundary where mountains will form.

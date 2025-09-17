@@ -98,6 +98,7 @@ class WorldGenerator:
             'mountain_uplift_feature_scale_km': self.user_config.get('mountain_uplift_feature_scale_km', DEFAULTS.MOUNTAIN_UPLIFT_FEATURE_SCALE_KM),
             'mountain_influence_radius_km': self.user_config.get('mountain_influence_radius_km', DEFAULTS.MOUNTAIN_INFLUENCE_RADIUS_KM),
             'mountain_uplift_strength': self.user_config.get('mountain_uplift_strength', DEFAULTS.MOUNTAIN_UPLIFT_STRENGTH),
+            'max_soil_depth_units': self.user_config.get('max_soil_depth_units', DEFAULTS.MAX_SOIL_DEPTH_UNITS),
         }
 
         # --- Convert KM feature scales to internal CM noise scales ---
@@ -136,14 +137,12 @@ class WorldGenerator:
         # are correctly reflected in the humidity calculations.
         pass
 
-    def get_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+    def _get_bedrock_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
         """
-        Generates elevation data by creating a base continental terrain and
-        adding a separate, tectonically-driven mountain uplift map on top.
+        Generates the base bedrock layer by creating a stable continental terrain
+        and then adding tectonic features as a final modification.
         """
-        # 1. Generate the base continental terrain.
-        # This is a simple combination of low-frequency continents and
-        # high-frequency detail noise.
+        # 1. Generate the base continental terrain noise.
         base_noise = noise.perlin_noise_2d(
             self._p,
             x_coords / self.settings['base_noise_scale'],
@@ -162,27 +161,91 @@ class WorldGenerator:
             lacunarity=self.settings['detail_noise_lacunarity']
         )
         
-        # The base terrain is a simple weighted sum.
-        base_terrain = base_noise + (detail_noise * self.settings['detail_noise_weight'])
+        # The raw terrain is a simple weighted sum. Its range is approx [-(1+weight), 1+weight].
+        base_terrain_noise = base_noise + (detail_noise * self.settings['detail_noise_weight'])
 
-        # 2. Generate the tectonic uplift map.
-        # This map is zero everywhere except along plate boundaries, where it
-        # contains the noise pattern for mountain ranges.
-        tectonic_uplift = self.get_tectonic_uplift(x_coords, y_coords)
+        # 2. Normalize the base terrain noise to a stable [0, 1] range.
+        # This is now completely independent of the tectonic strength.
+        weight = self.settings['detail_noise_weight']
+        theoretical_max_base = 1.0 + weight
+        normalized_base_terrain = (base_terrain_noise + theoretical_max_base) / (2 * theoretical_max_base)
 
-        # 3. Combine the base terrain and the uplift map.
-        # This is a simple additive process, as requested.
-        final_combined_noise = base_terrain + tectonic_uplift
+        # 3. Apply the amplitude shaping to the stable base terrain.
+        shaped_base_terrain = np.power(normalized_base_terrain, self.settings['terrain_amplitude'])
 
-        # 4. Normalize the result using a new theoretical bound.
-        # Max possible value = base_terrain_max + tectonic_uplift_max
-        # base_terrain_max = 1.0 (base) + 1.0 * weight (detail)
-        # The new uplift model's max value is 2.0 * strength.
-        theoretical_max = (1.0 + self.settings['detail_noise_weight']) + (2.0 * self.settings['mountain_uplift_strength'])
-        normalized_noise = (final_combined_noise + theoretical_max) / (2 * theoretical_max)
+        # 4. Generate the tectonic uplift map. This is an elevation *modifier*.
+        # Its values are now guaranteed to be positive.
+        tectonic_modifier = self.get_tectonic_uplift(x_coords, y_coords)
 
-        # 5. Apply final amplitude shaping.
-        return np.power(normalized_noise, self.settings['terrain_amplitude'])
+        # 5. Add the tectonic modifier to the shaped base terrain.
+        final_bedrock = shaped_base_terrain + tectonic_modifier
+
+        # 6. Clip the final result to the valid [0, 1] range.
+        # This ensures tectonic activity cannot create impossible elevations.
+        return np.clip(final_bedrock, 0.0, 1.0)
+
+    def get_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+        """
+        Generates the final elevation map by creating a bedrock layer and then
+        depositing a variable-depth soil layer on top of it, only on land.
+        """
+        # 1. Generate the foundational bedrock.
+        bedrock_elevation = self._get_bedrock_elevation(x_coords, y_coords)
+
+        # 2. Determine which parts of the bedrock are land.
+        water_level = self.settings['terrain_levels']['water']
+        land_mask = bedrock_elevation >= water_level
+
+        # 3. Calculate the slope of the bedrock to determine where soil can settle.
+        slope = self._get_slope(bedrock_elevation)
+
+        # 4. Calculate the potential depth of the soil based on the slope.
+        soil_depth = self._get_soil_depth(slope)
+
+        # 5. CRITICAL FIX: Apply the land_mask to the soil depth.
+        # This removes all soil from areas that are underwater, preventing the sea floor from rising.
+        soil_depth[~land_mask] = 0.0
+
+        # 6. The final elevation is the sum of the bedrock and the soil on top.
+        final_elevation = bedrock_elevation + soil_depth
+        
+        # We need to re-normalize the final elevation to ensure it stays within the [0, 1] range.
+        # The theoretical max is 1.0 (max bedrock) + MAX_SOIL_DEPTH_UNITS.
+        # Clipping is a safe and effective way to handle this.
+        return np.clip(final_elevation, 0.0, 1.0)
+
+    def _get_slope(self, bedrock_elevation_data: np.ndarray) -> np.ndarray:
+        """
+        Calculates the steepness (slope) of the given elevation data.
+        Returns a normalized array where 0.0 is flat and 1.0 is the steepest.
+        """
+        # Calculate the gradient in the x and y directions
+        dy, dx = np.gradient(bedrock_elevation_data)
+
+        # Calculate the magnitude of the gradient at each point
+        slope = np.sqrt(dx**2 + dy**2)
+
+        # Normalize the slope to the range [0, 1] for visualization
+        max_slope = np.max(slope)
+        if max_slope > 0:
+            return slope / max_slope
+        else:
+            return np.zeros_like(slope) # Return a black map if the terrain is perfectly flat
+
+    def _get_soil_depth(self, slope_data: np.ndarray) -> np.ndarray:
+        """
+        Calculates the depth of the soil layer based on the slope of the bedrock.
+        Flatter areas receive more soil.
+        """
+        # Invert the slope: 1.0 for flat areas, 0.0 for steepest areas.
+        soil_potential = 1.0 - slope_data
+
+        # Apply a power curve to make soil accumulate more in the flattest areas.
+        # A power of 2 is a good starting point.
+        soil_accumulation = np.power(soil_potential, 2)
+
+        # Scale the result by the maximum possible soil depth.
+        return soil_accumulation * self.settings['max_soil_depth_units']
 
     def _generate_base_noise(self, x_coords: np.ndarray, y_coords: np.ndarray, seed_offset: int = 0, scale: float = 1.0) -> np.ndarray:
         """A generic helper to produce a normalized noise map."""
@@ -367,13 +430,12 @@ class WorldGenerator:
         )
 
         # 2. Get the tectonic influence map. This smooth gradient (0 to 1) will
-        #    now define the large-scale shape and height of the mountain range.
+        #    define the large-scale shape and height of the mountain range.
         _, influence_map = self.get_tectonic_data(x_coords, y_coords)
 
         # 3. Create the final uplift map.
         # The influence_map creates the solid mountain shape.
-        # The uplift_noise adds texture and variation ON TOP of that shape.
-        # The (1 + uplift_noise) term ensures the final value is always positive.
+        # The (1 + uplift_noise) term shifts the noise from [-1, 1] to [0, 2].
         # The result is a solid mountain range whose height is modulated by noise,
         # which is then scaled by the user-defined strength.
         return influence_map * (1 + uplift_noise) * self.settings['mountain_uplift_strength']
