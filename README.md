@@ -2,7 +2,7 @@
 
 A standalone Python library and interactive design tool for generating complex, scientifically-grounded worlds. Designed from the ground up for modularity, performance, and realism, this package allows developers to seamlessly integrate a powerful world-generation engine into any Python-based simulation, game, or project.
 
-The core philosophy is to create a data-first engine that produces emergent, believable climate systems based on interconnected physical principles. The world now features a dynamic climate model with **prevailing winds**, **rain shadows**, and **climate-driven biomes**, creating realistic deserts and varied grasslands. The interactive editor allows for rapid iteration and design before committing to a final, high-performance "baked" world.
+The core philosophy is to create a data-first engine that produces emergent, believable climate and geological systems based on interconnected physical principles. The world now features a **layered terrain model** with bedrock and slope-based soil deposition, a dynamic climate model with **prevailing winds** and **rain shadows**, and **climate-driven biomes**. The interactive editor allows for rapid iteration and design before committing to a final, high-performance "baked" world.
 
 ## Table of Contents
 
@@ -40,7 +40,7 @@ The generator is architected as a self-contained Python package (`world_generato
 
 ### 2. Scientifically-Grounded Realism
 
-The goal is to generate worlds with believable and emergent characteristics. Climate is an emergent property of the terrain, with temperature affected by altitude (adiabatic lapse rate) and humidity driven by **prevailing winds**, **rain shadows**, and distance from water. This creates realistic biomes, from lush jungles to arid deserts, that are a direct consequence of the underlying physics.
+The goal is to generate worlds with believable and emergent characteristics. Terrain is now a two-layer system: a foundational **bedrock** layer is generated first, then a **soil** layer is deposited on top, with deeper soil accumulating in flatter areas. Climate is an emergent property of this final terrain, with temperature affected by altitude (adiabatic lapse rate) and humidity driven by **prevailing winds**, **rain shadows**, and distance from water. This creates realistic biomes and geological features, like exposed rock on steep slopes, that are a direct consequence of the underlying physics.
 
 ### 3. Rapid, Interactive Design
 
@@ -68,9 +68,9 @@ Realistic-Modular-Pygame-World-Generator/
 └── world_generator/                # The core, standalone, data-only library.
     ├── generator.py                # Contains the main WorldGenerator class.
     ├── noise.py                    # Optimized Perlin noise implementation.
+    ├── tectonics.py                # Tectonic plate and mountain generation.
     ├── config.py                   # Default internal constants for the generator.
-    └── color_maps.py               # Shared color mapping utilities.
-```
+    └── color_maps.py               # Shared color mapping utilities.```
 
 ## System Architecture: The Two-Tier Workflow
 
@@ -94,39 +94,38 @@ When you are satisfied with your world design in the editor, you can use the "Ba
 
 ### The Generation Pipeline: From Seed to Climate
 
-The underlying data generation is now fully dynamic to ensure that all climate effects respond in real-time to terrain changes in the editor. The pipeline is always executed in this order for every frame:
-1.  **Elevation:** The foundational terrain is generated. This is the single source of truth for the frame.
-2.  **Temperature (Celsius):** Calculated as a function of noise, altitude, and latitude.
-3.  **Humidity (Absolute, g/m³):** This is now an emergent property calculated **on-the-fly** from the final elevation and temperature data:
-    *   **Water Sources:** The system first identifies all bodies of water based on the final elevation map.
-    *   **Distance-to-Water:** A distance map is calculated in real-time.
-    *   **Rain Shadow:** A moisture occlusion map is calculated based on prevailing winds and mountain ranges.
-    *   **Final Humidity:** The absolute humidity is determined by combining the air's temperature-driven capacity for moisture with the environment's availability of moisture (from coasts and rain shadows).
-4.  **Biome & Final Colors:** The final terrain color (ice, snow, lush grass, sand desert, etc.) is determined by applying a set of prioritized rules based on the final elevation, temperature, and humidity.
+The underlying data generation is now a multi-stage process, executed in this order for every frame to ensure all systems respond correctly to parameter changes:
+1.  **Bedrock Generation:** A foundational bedrock layer is created by combining continental noise, detail noise, and tectonic uplift noise, which is then normalized and shaped.
+2.  **Soil Deposition:** The slope of the bedrock is calculated. A soil depth map is then generated where depth is inversely proportional to the slope. Soil is only deposited on land, not on the sea floor.
+3.  **Final Elevation:** The final, absolute elevation is calculated by adding the soil depth map to the bedrock layer.
+4.  **Climate Calculation:** Temperature (Celsius) and Humidity (g/m³) are calculated based on the **final elevation**, ensuring climate accurately reflects the soil-modified terrain.
+5.  **Biome & Final Colors:** The final terrain color is determined by a soil-aware process. Areas with very little soil are rendered as exposed rock. Soil-covered areas are colored based on a set of prioritized rules that factor in the final elevation, temperature, and humidity to create biomes like ice, snow, sand deserts, and various grasslands.
 
 ## Configuration Deep Dive
 
 The Live Editor allows you to modify key parameters in real-time. Other advanced parameters can be tuned in `world_generator/config.py`.
 
-| Parameter                         | Unit    | Default | UI Control        | Description                                                                                                                            |
-| --------------------------------- | ------- | ------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `TARGET_SEA_LEVEL_TEMP_C`         | Celsius | `15.0`  | Slider            | The "thermostat" for the world. Higher values create warmer worlds.                                                                    |
-| `DETAIL_NOISE_WEIGHT`             | float   | `0.25`  | Slider            | How much the detail layer influences the base terrain. Higher values create rougher, more mountainous worlds.                          |
-| `LAPSE_RATE_C_PER_UNIT_ELEVATION` | °C / ΔE | `40.0`  | Slider            | Temperature drop for a full elevation change. Controls how cold mountains get.                                                         |
-| `TERRAIN_BASE_FEATURE_SCALE_KM`   | km      | `40.0`  | Slider            | The size of continents. Increase for larger, more sprawling landmasses.                                                                |
-| `TERRAIN_AMPLITUDE`               | float   | `2.5`   | Slider            | The sharpness of the terrain. Higher values create more dramatic, steeper mountains and deeper valleys.                                |
-| `POLAR_TEMPERATURE_DROP_C`        | Celsius | `30.0`  | Slider            | The total temperature difference between the equator and the poles.                                                                    |
-| `world_width_chunks`              | chunks  | `800`   | Text Input        | The width of the world in chunks. Requires clicking "Apply Size Changes".                                                              |
-| `world_height_chunks`             | chunks  | `450`   | Text Input        | The height of the world in chunks. Requires clicking "Apply Size Changes".                                                               |
-| `SNOW_LINE_TEMP_C`                | Celsius | `0.0`   | Config File       | The temperature at or below which snow appears on land.                                                                                |
-| `ICE_FORMATION_TEMP_C`            | Celsius | `-2.0`  | Config File       | The temperature at or below which water freezes into ice.                                                                              |
-| `PREVAILING_WIND_DIRECTION_DEGREES` | Degrees | `180.0` | Config File       | The global wind direction (0=E, 90=N, 180=W, 270=S). Controls rain shadows.                                                            |
-| `HUMIDITY_COASTAL_FALLOFF_RATE`   | float   | `2.5`   | Config File       | A power factor for humidity dissipation. Higher values create a very sharp drop-off from the coast.                                    |
-| `BIOME_THRESHOLDS`                | dict    | varies  | Config File       | A dictionary of temperature and humidity values that control all biome transitions (e.g., where lush grass becomes normal grass).      |
+| Parameter                         | Unit                  | Default | UI Control        | Description                                                                                                                            |
+| --------------------------------- | --------------------- | ------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `TARGET_SEA_LEVEL_TEMP_C`         | Celsius               | `15.0`  | Slider            | The "thermostat" for the world. Higher values create warmer worlds.                                                                    |
+| `DETAIL_NOISE_WEIGHT`             | float                 | `0.25`  | Slider            | How much the detail layer influences the base terrain. Higher values create rougher, more mountainous bedrock.                       |
+| `LAPSE_RATE_C_PER_UNIT_ELEVATION` | °C / ΔE               | `40.0`  | Slider            | Temperature drop for a full elevation change. Controls how cold mountains get.                                                         |
+| `TERRAIN_BASE_FEATURE_SCALE_KM`   | km                    | `40.0`  | Slider            | The size of continents. Increase for larger, more sprawling landmasses.                                                                |
+| `TERRAIN_AMPLITUDE`               | float                 | `2.5`   | Slider            | The sharpness of the bedrock. Higher values create more dramatic, steeper mountains and deeper valleys.                                |
+| `POLAR_TEMPERATURE_DROP_C`        | Celsius               | `30.0`  | Slider            | The total temperature difference between the equator and the poles.                                                                    |
+| `MOUNTAIN_UPLIFT_STRENGTH`        | float                 | `0.8`   | Slider            | Controls the height of mountains formed by tectonic uplift. This is a purely additive effect on the bedrock.                         |
+| `world_width_chunks`              | chunks                | `800`   | Text Input        | The width of the world in chunks. Requires clicking "Apply Size Changes".                                                              |
+| `world_height_chunks`             | chunks                | `450`   | Text Input        | The height of the world in chunks. Requires clicking "Apply Size Changes".                                                               |
+| `MAX_SOIL_DEPTH_UNITS`            | Normalized Units      | `0.05`  | Config File       | The maximum depth of soil that can accumulate in perfectly flat, land-based areas.                                                     |
+| `SNOW_LINE_TEMP_C`                | Celsius               | `0.0`   | Config File       | The temperature at or below which snow appears on land.                                                                                |
+| `ICE_FORMATION_TEMP_C`            | Celsius               | `-2.0`  | Config File       | The temperature at or below which water freezes into ice.                                                                              |
+| `PREVAILING_WIND_DIRECTION_DEGREES` | Degrees               | `180.0` | Config File       | The global wind direction (0=E, 90=N, 180=W, 270=S). Controls rain shadows.                                                            |
+| `HUMIDITY_COASTAL_FALLOFF_RATE`   | float                 | `2.5`   | Config File       | A power factor for humidity dissipation. Higher values create a very sharp drop-off from the coast.                                    |
+| `BIOME_THRESHOLDS`                | dict                  | varies  | Config File       | A dictionary of temperature and humidity values that control all biome transitions (e.g., where lush grass becomes normal grass).      |
 
 ## Performance & Optimization
 
-*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `main.py`. The on-the-fly climate calculations are performed on this preview-sized array, maintaining interactivity.
+*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `main.py`. The on-the-fly climate and soil calculations are performed on this preview-sized array, maintaining interactivity.
 *   **Baking:** The baking process is a highly optimized, CPU-bound task that is parallelized across all available cores. Its duration is primarily determined by the total number of chunks and the raw processing power of the host machine.
 
 ### The Optimization Journey & Architectural Lessons
@@ -137,7 +136,7 @@ The current high performance of the `bake_world.py` script is the result of a ri
 1.  **Parallelization:** The core task was parallelized using Python's `multiprocessing` module, distributing the work of processing individual chunks across all available CPU cores.
 2.  **Advanced Compression:** A tiered, lossless compression strategy was implemented using the Pillow library. This includes content deduplication via hashing, 1x1 pixel compression for uniform chunks, and 8-bit PNG palettization for low-color chunks, dramatically reducing storage size.
 3.  **Data Quantization:** The smooth gradients of temperature and humidity data were quantized into discrete steps (e.g., one step per degree Celsius). This massively increased the effectiveness of content deduplication with minimal impact on visual quality.
-4.  **On-the-Fly Correctness:** The architecture was refactored to calculate climate data (distance-to-water, rain shadows) in real-time. This fixed a critical architectural flaw where climate was not responding to terrain changes, trading a negligible performance cost for a massive gain in correctness.
+4.  **On-the-Fly Correctness:** The architecture was refactored to calculate climate and soil data in real-time. This fixed critical architectural flaws where climate was not responding to terrain changes, trading a negligible performance cost for a massive gain in correctness.
 5.  **Low-Level CPU Speedup:** Numba's `fastmath=True` flag was applied to the core Perlin noise functions, allowing the JIT compiler to use faster, less-precise floating-point instructions, which provided a significant speed boost with no perceptible change in the visual output.
 
 **The Failed Approach: Block-Based Processing**
@@ -185,7 +184,7 @@ An attempt was made to further optimize the CPU-bound work by having each worker
 *   **Standard Controls:**
     *   **Pan:** `W`, `A`, `S`, `D` keys
     *   **Zoom:** Mouse Wheel Up/Down
-    *   **Cycle View Mode:** `V` key (Terrain, Temperature, Humidity)
+    *   **Cycle View Mode:** `V` key (Terrain, Temperature, Humidity, Elevation, Tectonic, Soil Depth)
     *   **Exit:** `ESC` key or close the window
 
 ## Using the Generator in Your Project
@@ -203,8 +202,7 @@ logger = logging.getLogger("my_simulation")
 my_config = { "seed": 999, "target_sea_level_temp_c": 25.0 }
 world_gen = WorldGenerator(config=my_config, logger=logger)
 
-# ... request data from world_gen ...
-```
+# ... request data from world_gen ...```
 
 ## Roadmap & Future Features
 
@@ -239,7 +237,7 @@ Contributions are welcome. Please adhere to the established architectural princi
 *   `pygame-gui`: Used for the interactive UI elements in the editor.
 *   `numpy`: The core dependency for all numerical operations.
 *   `numba`: Used to JIT-compile the performance-critical Perlin noise function.
-*   `scipy`: Used for the Euclidean Distance Transform to enable the realistic humidity model.
+*   `scipy`: Used for tectonic plate generation (`cKDTree`) and other scientific computations.
 *   `Pillow`: Used for robust, high-performance image saving in the parallel baker.
 *   `tqdm`: Used to display a progress bar for the command-line baker.
 
