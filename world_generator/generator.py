@@ -27,6 +27,7 @@ from scipy.ndimage import distance_transform_edt, map_coordinates
 
 from . import config as DEFAULTS
 from . import noise
+from . import tectonics
 
 class WorldGenerator:
     """
@@ -53,6 +54,8 @@ class WorldGenerator:
             'seed': self.user_config.get('seed', DEFAULTS.DEFAULT_SEED),
             'temp_seed_offset': self.user_config.get('temp_seed_offset', DEFAULTS.TEMP_SEED_OFFSET),
             'detail_seed_offset': self.user_config.get('detail_seed_offset', DEFAULTS.DETAIL_SEED_OFFSET),
+            'tectonic_plate_seed_offset': self.user_config.get('tectonic_plate_seed_offset', DEFAULTS.TECTONIC_PLATE_SEED_OFFSET),
+            'mountain_uplift_seed_offset': self.user_config.get('mountain_uplift_seed_offset', DEFAULTS.MOUNTAIN_UPLIFT_SEED_OFFSET),
             
             # Load human-readable feature scales (in km)
             'terrain_base_feature_scale_km': self.user_config.get('terrain_base_feature_scale_km', DEFAULTS.TERRAIN_BASE_FEATURE_SCALE_KM),
@@ -91,6 +94,10 @@ class WorldGenerator:
             'chunk_size_cm': self.user_config.get('chunk_size_cm', DEFAULTS.CHUNK_SIZE_CM),
             'world_width_chunks': self.user_config.get('world_width_chunks', DEFAULTS.DEFAULT_WORLD_WIDTH_CHUNKS),
             'world_height_chunks': self.user_config.get('world_height_chunks', DEFAULTS.DEFAULT_WORLD_HEIGHT_CHUNKS),
+            'num_tectonic_plates': self.user_config.get('num_tectonic_plates', DEFAULTS.DEFAULT_NUM_TECTONIC_PLATES),
+            'mountain_uplift_feature_scale_km': self.user_config.get('mountain_uplift_feature_scale_km', DEFAULTS.MOUNTAIN_UPLIFT_FEATURE_SCALE_KM),
+            'mountain_influence_radius_km': self.user_config.get('mountain_influence_radius_km', DEFAULTS.MOUNTAIN_INFLUENCE_RADIUS_KM),
+            'mountain_uplift_strength': self.user_config.get('mountain_uplift_strength', DEFAULTS.MOUNTAIN_UPLIFT_STRENGTH),
         }
 
         # --- Convert KM feature scales to internal CM noise scales ---
@@ -99,6 +106,7 @@ class WorldGenerator:
         self.settings['base_noise_scale'] = self.settings['terrain_base_feature_scale_km'] * DEFAULTS.CM_PER_KM
         self.settings['detail_noise_scale'] = self.settings['terrain_detail_feature_scale_km'] * DEFAULTS.CM_PER_KM
         self.settings['climate_noise_scale'] = self.settings['climate_feature_scale_km'] * DEFAULTS.CM_PER_KM
+        self.settings['mountain_uplift_noise_scale'] = self.settings['mountain_uplift_feature_scale_km'] * DEFAULTS.CM_PER_KM
 
         # --- Public Properties for easy access ---
         self.seed = self.settings['seed']
@@ -130,22 +138,21 @@ class WorldGenerator:
 
     def get_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
         """
-        Generates elevation data by stacking two layers of Perlin noise.
-        - A low-frequency base layer for continents.
-        - A high-frequency detail layer for mountains and coastal features.
+        Generates elevation data by creating a base continental terrain and
+        adding a separate, tectonically-driven mountain uplift map on top.
         """
-        # 1. Generate the low-frequency base noise for continental shapes
+        # 1. Generate the base continental terrain.
+        # This is a simple combination of low-frequency continents and
+        # high-frequency detail noise.
         base_noise = noise.perlin_noise_2d(
             self._p,
-            (x_coords) / self.settings['base_noise_scale'],
-            (y_coords) / self.settings['base_noise_scale'],
+            x_coords / self.settings['base_noise_scale'],
+            y_coords / self.settings['base_noise_scale'],
             octaves=self.settings['base_noise_octaves'],
             persistence=self.settings['base_noise_persistence'],
             lacunarity=self.settings['base_noise_lacunarity']
         )
-
-        # 2. Generate high-frequency detail noise
-        # We use a seed offset to ensure the detail layer is different from other layers.
+        
         detail_noise = noise.perlin_noise_2d(
             self._p,
             (x_coords + self.settings['detail_seed_offset']) / self.settings['detail_noise_scale'],
@@ -154,17 +161,27 @@ class WorldGenerator:
             persistence=self.settings['detail_noise_persistence'],
             lacunarity=self.settings['detail_noise_lacunarity']
         )
+        
+        # The base terrain is a simple weighted sum.
+        base_terrain = base_noise + (detail_noise * self.settings['detail_noise_weight'])
 
-        # 3. Combine the layers. The detail layer is scaled by its weight.
-        combined_noise = base_noise + (detail_noise * self.settings['detail_noise_weight'])
+        # 2. Generate the tectonic uplift map.
+        # This map is zero everywhere except along plate boundaries, where it
+        # contains the noise pattern for mountain ranges.
+        tectonic_uplift = self.get_tectonic_uplift(x_coords, y_coords)
 
-        # 4. Normalize the result back to the [0, 1] range using a fixed theoretical bound.
-        # This is the critical fix to prevent seams between chunks.
-        # The theoretical max value is 1.0 (from base) + weight (from detail).
-        theoretical_max = 1.0 + self.settings['detail_noise_weight']
-        normalized_noise = (combined_noise + theoretical_max) / (2 * theoretical_max)
+        # 3. Combine the base terrain and the uplift map.
+        # This is a simple additive process, as requested.
+        final_combined_noise = base_terrain + tectonic_uplift
 
-        # 5. Apply amplitude to shape the final terrain (e.g., flatten valleys, sharpen peaks)
+        # 4. Normalize the result using a new theoretical bound.
+        # Max possible value = base_terrain_max + tectonic_uplift_max
+        # base_terrain_max = 1.0 (base) + 1.0 * weight (detail)
+        # The new uplift model's max value is 2.0 * strength.
+        theoretical_max = (1.0 + self.settings['detail_noise_weight']) + (2.0 * self.settings['mountain_uplift_strength'])
+        normalized_noise = (final_combined_noise + theoretical_max) / (2 * theoretical_max)
+
+        # 5. Apply final amplitude shaping.
         return np.power(normalized_noise, self.settings['terrain_amplitude'])
 
     def _generate_base_noise(self, x_coords: np.ndarray, y_coords: np.ndarray, seed_offset: int = 0, scale: float = 1.0) -> np.ndarray:
@@ -318,3 +335,45 @@ class WorldGenerator:
             self.settings['min_absolute_humidity_g_m3'],
             self.settings['max_absolute_humidity_g_m3']
         )
+    
+    def get_tectonic_data(self, x_coords: np.ndarray, y_coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Generates tectonic plate data using the tectonics module.
+        """
+        radius_cm = self.settings['mountain_influence_radius_km'] * DEFAULTS.CM_PER_KM
+        
+        plate_ids, influence_map = tectonics.get_tectonic_maps(
+            x_coords, y_coords,
+            self.world_width_cm, self.world_height_cm,
+            self.settings['num_tectonic_plates'],
+            self.seed + self.settings['tectonic_plate_seed_offset'],
+            radius_cm
+        )
+        return plate_ids, influence_map
+    
+    def get_tectonic_uplift(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+        """
+        Generates a self-contained noise map representing mountain ranges that
+        form along tectonic plate boundaries. The map is 0 in plate interiors.
+        """
+        # 1. Generate the noise pattern for the mountains' surface texture.
+        uplift_noise = noise.perlin_noise_2d(
+            self._p,
+            (x_coords + self.settings['mountain_uplift_seed_offset']) / self.settings['mountain_uplift_noise_scale'],
+            (y_coords + self.settings['mountain_uplift_seed_offset']) / self.settings['mountain_uplift_noise_scale'],
+            octaves=self.settings['base_noise_octaves'],
+            persistence=self.settings['base_noise_persistence'],
+            lacunarity=self.settings['base_noise_lacunarity']
+        )
+
+        # 2. Get the tectonic influence map. This smooth gradient (0 to 1) will
+        #    now define the large-scale shape and height of the mountain range.
+        _, influence_map = self.get_tectonic_data(x_coords, y_coords)
+
+        # 3. Create the final uplift map.
+        # The influence_map creates the solid mountain shape.
+        # The uplift_noise adds texture and variation ON TOP of that shape.
+        # The (1 + uplift_noise) term ensures the final value is always positive.
+        # The result is a solid mountain range whose height is modulated by noise,
+        # which is then scaled by the user-defined strength.
+        return influence_map * (1 + uplift_noise) * self.settings['mountain_uplift_strength']

@@ -18,8 +18,11 @@ DEFAULT_SEED = 1337
 # Large prime numbers used to offset seeds for different layers, ensuring
 # they are unique but deterministic from the master seed.
 TEMP_SEED_OFFSET = 12347
+DETAIL_SEED_OFFSET = 98761
+TECTONIC_PLATE_SEED_OFFSET = 54321
+MOUNTAIN_UPLIFT_SEED_OFFSET = 25391 # New offset for mountain range noise
+
 # HUMIDITY_SEED_OFFSET is deprecated as humidity is now deterministic.
-DETAIL_SEED_OFFSET = 98761 # New offset for the detail layer
 
 # --- Unit Conversion ---
 # Define a constant to avoid magic numbers in the code (Rule 1)
@@ -154,6 +157,16 @@ HUMIDITY_COASTAL_FALLOFF_RATE = 2.5
 # Used for the real-world model and for renderer normalization.
 MIN_ABSOLUTE_HUMIDITY_G_M3 = 0.0
 MAX_ABSOLUTE_HUMIDITY_G_M3 = 30.0
+
+# --- Tectonics & Geology (Rule 8) ---
+DEFAULT_NUM_TECTONIC_PLATES = 2
+# The feature scale for the noise that creates the mountain ranges themselves.
+MOUNTAIN_UPLIFT_FEATURE_SCALE_KM = 15.0
+# The radius, in km, around a plate boundary where mountains will form.
+MOUNTAIN_INFLUENCE_RADIUS_KM = 50.0
+# A multiplier for how high mountains get at the peak of a plate boundary.
+# This now controls the blending of the dedicated uplift noise layer.
+MOUNTAIN_UPLIFT_STRENGTH = 0.8
 
 # --- Rendering & Performance ---
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture

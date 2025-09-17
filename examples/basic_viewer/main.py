@@ -61,7 +61,7 @@ class Application:
         self._setup_pygame()
 
                 # --- State ---
-        self.view_modes = ["terrain", "temperature", "humidity", "elevation"]
+        self.view_modes = ["terrain", "temperature", "humidity", "elevation", "tectonic"]
         self.current_view_mode_index = 0
         self.view_mode = self.view_modes[self.current_view_mode_index]
         self.frame_count = 0
@@ -340,7 +340,96 @@ class Application:
             manager=self.ui_manager,
             container=self.ui_panel
         )
-        current_y += UI_SLIDER_HEIGHT + (UI_PADDING * 2)
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
+
+        # --- Slider 8: Tectonic Smoothness ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Tectonic Smoothness (km)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        self.mountain_smoothness_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_settings.get('mountain_uplift_feature_scale_km', 15.0),
+            value_range=(2.0, 75.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
+
+        # --- Slider 9: Tectonic Width ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Tectonic Width (km)",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        self.mountain_width_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_settings.get('mountain_influence_radius_km', 50.0),
+            value_range=(10.0, 250.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
+
+        # --- Slider 10: Tectonic Strength ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Tectonic Strength",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        self.tectonic_strength_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
+            start_value=world_settings.get('mountain_uplift_strength', 0.8),
+            value_range=(0.0, 2.0),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_SLIDER_HEIGHT + UI_PADDING
+
+                # --- Tectonic Plate Controls ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="Number of Tectonic Plates",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        # Define layout for the button group
+        button_width = 40
+        label_width = element_width - (2 * button_width) - (2 * UI_PADDING)
+        
+        self.decrease_plates_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, button_width, UI_BUTTON_HEIGHT),
+            text="-",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        
+        self.plate_count_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING + button_width + UI_PADDING, current_y, label_width, UI_BUTTON_HEIGHT),
+            text=str(world_settings.get('num_tectonic_plates', 40)),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+
+        self.increase_plates_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(UI_PADDING + button_width + UI_PADDING + label_width + UI_PADDING, current_y, button_width, UI_BUTTON_HEIGHT),
+            text="+",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_BUTTON_HEIGHT + (UI_PADDING * 2)
 
         # --- World Size Inputs ---
         pygame_gui.elements.UILabel(
@@ -547,7 +636,16 @@ class Application:
                     settings['terrain_amplitude'] = new_value
                 elif event.ui_element == self.polar_drop_slider:
                     settings['polar_temperature_drop_c'] = new_value
-                
+                elif event.ui_element == self.mountain_smoothness_slider:
+                    settings['mountain_uplift_feature_scale_km'] = new_value
+                    # This requires re-calculating the internal noise scale
+                    from world_generator.config import CM_PER_KM
+                    settings['mountain_uplift_noise_scale'] = new_value * CM_PER_KM
+                elif event.ui_element == self.mountain_width_slider:
+                    settings['mountain_influence_radius_km'] = new_value
+                elif event.ui_element == self.tectonic_strength_slider:
+                    settings['mountain_uplift_strength'] = new_value
+
                 self.world_params_dirty = True
             
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
@@ -557,6 +655,8 @@ class Application:
                     self._apply_world_size_changes()
                 elif event.ui_element == self.calculate_size_button:
                     self._calculate_and_display_bake_size()
+                else:
+                    self._handle_plate_button_press(event.ui_element)
 
             # --- Handle user-driven events only if test is not running ---
             if event.type == pygame.MOUSEWHEEL:
@@ -670,8 +770,23 @@ class Application:
             return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
         elif self.view_mode == "humidity":
             return color_maps.get_humidity_color_array(humidity_data, self.humidity_lut)
-        else: # elevation
+        elif self.view_mode == "elevation":
             return color_maps.get_elevation_color_array(elevation_data)
+        else: # tectonic
+            # The tectonic view now shows the actual uplift noise map.
+            # This provides direct visual feedback on what is being added to the terrain.
+            tectonic_uplift_map = self.world_generator.get_tectonic_uplift(wx_grid, wy_grid)
+            
+            # We can reuse the elevation color function to render this as grayscale.
+            # We normalize the map first. The new model's output range is [0, 2 * strength].
+            strength = self.world_generator.settings['mountain_uplift_strength']
+            if strength > 0:
+                # Normalize from [0, 2 * strength] to [0, 1]
+                normalized_map = tectonic_uplift_map / (2 * strength)
+            else:
+                normalized_map = np.zeros_like(tectonic_uplift_map)
+
+            return color_maps.get_elevation_color_array(normalized_map)
 
     def _calculate_and_display_bake_size(self):
         """
@@ -946,6 +1061,23 @@ class Application:
         ps.print_stats(log_count)
         
         self.logger.info(f"--- Top {log_count} Profiling Results ---\n{s.getvalue()}")
+
+    def _handle_plate_button_press(self, ui_element):
+        """Handles clicks on the tectonic plate adjustment buttons."""
+        settings = self.world_generator.settings
+        current_plates = settings['num_tectonic_plates']
+        
+        if ui_element == self.increase_plates_button:
+            # Define a reasonable upper limit
+            settings['num_tectonic_plates'] = min(250, current_plates + 1)
+        elif ui_element == self.decrease_plates_button:
+            # Define a reasonable lower limit
+            settings['num_tectonic_plates'] = max(2, current_plates - 1)
+        
+        # Check if the value actually changed
+        if settings['num_tectonic_plates'] != current_plates:
+            self.plate_count_label.set_text(str(settings['num_tectonic_plates']))
+            self.world_params_dirty = True
 
 
 if __name__ == '__main__':

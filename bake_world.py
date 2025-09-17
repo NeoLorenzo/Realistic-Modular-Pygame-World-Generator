@@ -114,8 +114,14 @@ def process_chunk(coords):
 
     temp_data = worker_generator.get_temperature(wx_grid, wy_grid, elevation_data=elevation_data, base_noise=temp_noise)
     humidity_data = worker_generator.get_humidity(wx_grid, wy_grid, elevation_data, temperature_data_c=temp_data)
+    tectonic_uplift = worker_generator.get_tectonic_uplift(wx_grid, wy_grid)
 
-    data_map = {"terrain": elevation_data, "temperature": temp_data, "humidity": humidity_data}
+    data_map = {
+        "terrain": elevation_data,
+        "temperature": temp_data,
+        "humidity": humidity_data,
+        "tectonic": tectonic_uplift # Store the new uplift map
+    }
     
     chunk_results = {'cx': cx, 'cy': cy, 'hashes': {}, 'compression_types': {}}
 
@@ -127,8 +133,18 @@ def process_chunk(coords):
             color_array = color_maps.get_temperature_color_array(data_map["temperature"], worker_luts['temp'])
         elif mode == "humidity":
             color_array = color_maps.get_humidity_color_array(data_map["humidity"], worker_luts['humidity'])
-        else: # elevation
+        elif mode == "elevation":
             color_array = color_maps.get_elevation_color_array(data_map["terrain"])
+        else: # tectonic
+            # Normalize and color the tectonic uplift map for baking.
+            tectonic_map = data_map["tectonic"]
+            strength = worker_generator.settings['mountain_uplift_strength']
+            if strength > 0:
+                # The new model's output range is [0, 2 * strength].
+                normalized_map = tectonic_map / (2 * strength)
+            else:
+                normalized_map = np.zeros_like(tectonic_map)
+            color_array = color_maps.get_elevation_color_array(normalized_map)
 
         file_hash = hashlib.md5(color_array.tobytes()).hexdigest()
         compression_type = save_chunk_surface(color_array, worker_chunk_dirs[mode], file_hash)
@@ -179,7 +195,7 @@ def bake_world(config_path: str):
 
     # 4. --- Prepare Output Directories ---
     base_output_dir = f"baked_worlds/seed_{seed}"
-    view_modes = ["terrain", "temperature", "humidity", "elevation"]
+    view_modes = ["terrain", "temperature", "humidity", "elevation", "tectonic"]
     chunk_dirs = {}
     for mode in view_modes:
         # Define the paths, but do not create the directories here.

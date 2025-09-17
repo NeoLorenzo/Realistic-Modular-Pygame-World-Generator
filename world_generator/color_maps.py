@@ -221,3 +221,14 @@ def get_elevation_color_array(elevation_values: np.ndarray) -> np.ndarray:
     colors = np.stack([gray_values] * 3, axis=-1)
     
     return np.transpose(colors, (1, 0, 2))
+
+def get_tectonic_color_array(plate_id_map: np.ndarray, num_plates: int, seed: int) -> np.ndarray:
+    """Generates a color array where each tectonic plate has a unique, deterministic color."""
+    # 1. Create a deterministic but random color for each plate ID.
+    rng = np.random.default_rng(seed)
+    color_palette = rng.integers(0, 256, size=(num_plates, 3), dtype=np.uint8)
+    
+    # 2. Use the plate_id_map as indices to look up colors from the palette.
+    colors = color_palette[plate_id_map]
+    
+    return np.transpose(colors, (1, 0, 2))
