@@ -60,8 +60,8 @@ class Application:
         self.config = self._load_config()
         self._setup_pygame()
 
-        # --- State ---
-        self.view_modes = ["terrain", "temperature", "humidity"]
+                # --- State ---
+        self.view_modes = ["terrain", "temperature", "humidity", "elevation"]
         self.current_view_mode_index = 0
         self.view_mode = self.view_modes[self.current_view_mode_index]
         self.frame_count = 0
@@ -668,8 +668,10 @@ class Application:
             return color_maps.get_terrain_color_array(elevation_data, temp_data, humidity_data)
         elif self.view_mode == "temperature":
             return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
-        else: # humidity
+        elif self.view_mode == "humidity":
             return color_maps.get_humidity_color_array(humidity_data, self.humidity_lut)
+        else: # elevation
+            return color_maps.get_elevation_color_array(elevation_data)
 
     def _calculate_and_display_bake_size(self):
         """

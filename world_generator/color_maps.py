@@ -210,3 +210,14 @@ def get_humidity_color_array(humidity_values: np.ndarray, humidity_lut: np.ndarr
     indices = (normalized_humidity * 255).astype(np.uint8)
     colors = humidity_lut[indices]
     return np.transpose(colors, (1, 0, 2))
+
+def get_elevation_color_array(elevation_values: np.ndarray) -> np.ndarray:
+    """Converts normalized elevation data [0, 1] into a grayscale RGB color array."""
+    # Scale the normalized [0, 1] float values to [0, 255] integer grayscale values.
+    gray_values = (elevation_values * 255).astype(np.uint8)
+    
+    # Create a 3-channel RGB array by stacking the grayscale values.
+    # np.stack is efficient for this operation.
+    colors = np.stack([gray_values] * 3, axis=-1)
+    
+    return np.transpose(colors, (1, 0, 2))

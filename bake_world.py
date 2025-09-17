@@ -124,9 +124,11 @@ def process_chunk(coords):
             # Pass all three climate layers to the function for full biome calculation.
             color_array = color_maps.get_terrain_color_array(data_map["terrain"], data_map["temperature"], data_map["humidity"])
         elif mode == "temperature":
-            color_array = color_maps.get_temperature_color_array(data_map[mode], worker_luts['temp'])
-        else: # humidity
-            color_array = color_maps.get_humidity_color_array(data_map[mode], worker_luts['humidity'])
+            color_array = color_maps.get_temperature_color_array(data_map["temperature"], worker_luts['temp'])
+        elif mode == "humidity":
+            color_array = color_maps.get_humidity_color_array(data_map["humidity"], worker_luts['humidity'])
+        else: # elevation
+            color_array = color_maps.get_elevation_color_array(data_map["terrain"])
 
         file_hash = hashlib.md5(color_array.tobytes()).hexdigest()
         compression_type = save_chunk_surface(color_array, worker_chunk_dirs[mode], file_hash)
@@ -177,7 +179,7 @@ def bake_world(config_path: str):
 
     # 4. --- Prepare Output Directories ---
     base_output_dir = f"baked_worlds/seed_{seed}"
-    view_modes = ["terrain", "temperature", "humidity"]
+    view_modes = ["terrain", "temperature", "humidity", "elevation"]
     chunk_dirs = {}
     for mode in view_modes:
         # Define the paths, but do not create the directories here.
