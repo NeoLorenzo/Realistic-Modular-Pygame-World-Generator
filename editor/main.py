@@ -1,31 +1,31 @@
-# examples/basic_viewer/main.py
+# editor/main.py
 
 import sys
 import os
 import json
 import logging
 import logging.config
-import pygame
+import queue
+# import pygame # MOVED
 import cProfile
 import pstats
 import io
 from datetime import datetime
-import pygame_gui
+# import pygame_gui # MOVED
 import subprocess
 import time
 import hashlib
 import numpy as np
+import threading
+from . import baker
 
-# To import from the parent directory (Modular_Pygame_World_Generator),
-# we add it to the Python path.
-# This is necessary because 'examples' is not in the same package as 'world_generator'.
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+# The sys.path manipulation is no longer needed when running as a module.
 
 from world_generator.generator import WorldGenerator
 # Import the color_maps module to access its functions.
 from world_generator import color_maps
-from renderer import WorldRenderer
-from camera import Camera
+# from renderer import WorldRenderer # MOVED
+# from camera import Camera # MOVED
 
 # --- UI Constants (Rule 1) ---
 UI_PANEL_WIDTH = 320
@@ -84,9 +84,14 @@ class Application:
         # Bake Controls
         self.bake_button = None
         self.size_estimate_label = None
+        self.bake_progress_bar = None
+        self.bake_status_label = None
         # Tooltip
         self.tooltip = None
         self.last_mouse_world_pos = (None, None)
+        
+        # --- Bake Communication ---
+        self.bake_progress_queue = None
         
         # --- State for Live Preview Mode ---
         # This MUST be initialized before _setup_ui() is called.
@@ -148,7 +153,7 @@ class Application:
 
     def _setup_logging(self):
         """Initializes the logging system from a config file."""
-        log_config_path = 'examples/basic_viewer/logging_config.json'
+        log_config_path = 'editor/logging_config.json'
         # This path must match the relative path used in the JSON config.
         log_dir = 'logs'
         
@@ -167,7 +172,7 @@ class Application:
 
     def _load_config(self) -> dict:
         """Loads simulation parameters from the config file."""
-        config_path = 'examples/basic_viewer/config.json'
+        config_path = 'editor/config.json'
         self.logger.info(f"Loading configuration from {config_path}")
         try:
             with open(config_path, 'r') as f:
@@ -497,6 +502,24 @@ class Application:
             manager=self.ui_manager,
             container=self.ui_panel
         )
+        current_y += UI_BUTTON_HEIGHT + UI_PADDING
+
+        # --- Bake Progress UI ---
+        self.bake_progress_bar = pygame_gui.elements.UIProgressBar(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            manager=self.ui_manager,
+            container=self.ui_panel,
+            visible=False  # Initially hidden
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        self.bake_status_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="",
+            manager=self.ui_manager,
+            container=self.ui_panel,
+            visible=False  # Initially hidden
+        )
 
         # --- Tooltip Initialization ---
         # Create the tooltip using a UITextBox, which is the correct element for
@@ -650,7 +673,7 @@ class Application:
             
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
                 if event.ui_element == self.bake_button:
-                    self._start_background_bake()
+                    self._start_threaded_bake()
                 elif event.ui_element == self.apply_size_button:
                     self._apply_world_size_changes()
                 elif event.ui_element == self.calculate_size_button:
@@ -986,46 +1009,40 @@ class Application:
         self.known_colors_list = list(self.color_to_terrain_map.keys())
         self.known_colors_array = np.array(self.known_colors_list)
 
-    def _start_background_bake(self):
+    def _start_threaded_bake(self):
         """
-        Saves the current configuration and launches the bake_world.py script
-        as a separate, non-blocking process.
+        Launches the baker function in a separate, non-blocking thread and
+        establishes a queue for progress updates.
         """
         self.logger.info("Bake process requested by user.")
-        
-        # 1. Create a temp directory if it doesn't exist
-        temp_dir = "temp"
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
+        self.bake_button.set_text("Baking in Progress...")
+        self.bake_button.disable()
 
-        # 2. Save the current, modified config to a temporary file
-        timestamp = int(time.time())
-        temp_config_path = os.path.join(temp_dir, f"bake_config_{timestamp}.json")
-        
-        with open(temp_config_path, 'w') as f:
-            json.dump(self.config, f, indent=4)
-        
-        self.logger.info(f"Saved temporary bake config to: {temp_config_path}")
+        # Reset and show the progress UI
+        self.bake_progress_bar.set_current_progress(0)
+        self.bake_progress_bar.show()
+        self.bake_status_label.set_text("Baking...")
+        self.bake_status_label.show()
 
-        # 3. Launch the baker script as a new process
-        bake_script_path = "bake_world.py"
-        command = [sys.executable, bake_script_path, "--config", temp_config_path]
-        
-        try:
-            subprocess.Popen(command)
-            self.logger.info(f"Successfully launched background bake process: {' '.join(command)}")
-            
-            # 4. Provide UI feedback
-            self.bake_button.set_text("Baking in Progress...")
-            self.bake_button.disable()
-        except FileNotFoundError:
-            self.logger.error(f"Could not find the baker script at '{bake_script_path}'. Is it in the project root?")
-        except Exception as e:
-            self.logger.critical(f"Failed to launch bake process: {e}")
+        bake_config = self.config.copy()
+        bake_config['world_generation_parameters'] = self.world_generator.settings
+
+        # Create the communication queue for this bake instance.
+        self.bake_progress_queue = queue.Queue()
+
+        # Create and start the background thread.
+        bake_thread = threading.Thread(
+            target=baker.bake_world,
+            args=(bake_config, self.bake_progress_queue),
+            daemon=True
+        )
+        bake_thread.start()
+        self.logger.info("Successfully launched background bake thread.")
 
     def _update(self):
         """Update application state. Runs the performance test if active."""
         self._update_tooltip()
+        self._check_bake_progress()
 
         if not self.is_perf_test_running:
             return
@@ -1099,7 +1116,37 @@ class Application:
             self.plate_count_label.set_text(str(settings['num_tectonic_plates']))
             self.world_params_dirty = True
 
+    def _check_bake_progress(self):
+        """Polls the bake progress queue and updates the UI."""
+        if self.bake_progress_queue:
+            try:
+                message = self.bake_progress_queue.get_nowait()
+                self.logger.info(f"BAKER MSG: {message}") # Keep logging for debug
+
+                status = message.get("status")
+                if status == "running":
+                    progress = message.get("progress", 0.0)
+                    self.bake_progress_bar.set_current_progress(progress)
+                    self.bake_status_label.set_text(f"Baking... {int(progress * 100)}%")
+                
+                elif status in ["complete", "error"]:
+                    self.bake_status_label.set_text(message.get("message", "Done!"))
+                    self.bake_progress_bar.hide()
+                    self.bake_button.set_text("Bake World")
+                    self.bake_button.enable()
+                    self.bake_progress_queue = None
+
+            except queue.Empty:
+                pass
 
 if __name__ == '__main__':
+    # --- Lazy Imports (Rule 7 / Performance) ---
+    # These are imported here so that worker processes spawned by the baker
+    # do not import heavy GUI libraries they don't need.
+    import pygame
+    import pygame_gui
+    from renderer import WorldRenderer
+    from camera import Camera
+
     app = Application()
     app.run()

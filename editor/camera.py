@@ -1,4 +1,4 @@
-# examples/basic_viewer/camera.py
+# editor/camera.py
 
 import pygame
 

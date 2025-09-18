@@ -6,6 +6,7 @@ __pycache__/
 # Generated output directories
 /profiles
 /logs
+/baked_worlds
 
 # C extensions
 *.so
