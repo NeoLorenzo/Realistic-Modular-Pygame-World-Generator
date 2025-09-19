@@ -400,25 +400,24 @@ class WorldGenerator:
             self.settings['max_absolute_humidity_g_m3']
         )
     
-    def get_tectonic_data(self, x_coords: np.ndarray, y_coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def get_tectonic_data(self, x_coords: np.ndarray, y_coords: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Generates tectonic plate data using the tectonics module.
+        Generates the raw Voronoi data for tectonic plates.
+        This is an expensive operation that should be cached by the caller.
         """
-        radius_cm = self.settings['mountain_influence_radius_km'] * DEFAULTS.CM_PER_KM
-        
-        plate_ids, influence_map = tectonics.get_tectonic_maps(
+        plate_ids, dist1, dist2 = tectonics.get_voronoi_data(
             x_coords, y_coords,
             self.world_width_cm, self.world_height_cm,
             self.settings['num_tectonic_plates'],
-            self.seed + self.settings['tectonic_plate_seed_offset'],
-            radius_cm
+            self.seed + self.settings['tectonic_plate_seed_offset']
         )
-        return plate_ids, influence_map
+        return plate_ids, dist1, dist2
     
-    def get_tectonic_uplift(self, x_coords: np.ndarray, y_coords: np.ndarray, influence_map: np.ndarray = None) -> np.ndarray:
+    def get_tectonic_uplift(self, x_coords: np.ndarray, y_coords: np.ndarray, influence_map: np.ndarray) -> np.ndarray:
         """
         Generates a self-contained noise map representing mountain ranges that
         form along tectonic plate boundaries. The map is 0 in plate interiors.
+        The caller MUST provide a pre-calculated influence_map.
         """
         # 1. Generate the noise pattern for the mountains' surface texture.
         uplift_noise = noise.perlin_noise_2d(
@@ -430,11 +429,7 @@ class WorldGenerator:
             lacunarity=self.settings['base_noise_lacunarity']
         )
 
-        # 2. Get the tectonic influence map if not provided.
-        if influence_map is None:
-            _, influence_map = self.get_tectonic_data(x_coords, y_coords)
-
-        # 3. Create the final uplift map.
+        # 2. Create the final uplift map using the provided influence map.
         # The influence_map creates the solid mountain shape.
         # The (1 + uplift_noise) term shifts the noise from [-1, 1] to [0, 2].
         # The result is a solid mountain range whose height is modulated by noise,

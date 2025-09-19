@@ -101,11 +101,15 @@ class Application:
 
         # --- Hierarchical Caching (Rule 11) ---
         # Dirty flags to control the regeneration pipeline
+        self.plate_layout_dirty = True # NEW: For expensive Voronoi calculation
         self.tectonic_params_dirty = True
         self.terrain_maps_dirty = True
         self.climate_maps_dirty = True
 
         # Cached data maps to avoid recalculation
+        self.cached_plate_ids = None # NEW
+        self.cached_dist1 = None # NEW
+        self.cached_dist2 = None # NEW
         self.cached_tectonic_influence_map = None
         self.cached_tectonic_uplift_map = None
         self.cached_bedrock_map = None
@@ -779,8 +783,9 @@ class Application:
         settings[name] = value
 
 # 2. Define parameter categories
+        # NEW: Split tectonic keys into layout vs. non-layout
+        plate_layout_keys = ['num_tectonic_plates']
         tectonic_keys = [
-            'num_tectonic_plates',
             'mountain_influence_radius_km',
             'mountain_uplift_feature_scale_km', # Tectonic smoothness affects uplift noise
             'mountain_uplift_strength' # Controls the result of the uplift calculation
@@ -792,11 +797,18 @@ class Application:
         ]
         
         # 3. Set dirty flags in a cascading manner
-        if name in tectonic_keys:
+        if name in plate_layout_keys:
+            self.plate_layout_dirty = True
             self.tectonic_params_dirty = True
             self.terrain_maps_dirty = True
             self.climate_maps_dirty = True
-            self.logger.info(f"Tectonic parameter '{name}' changed. Invalidating all caches.")
+            self.logger.info(f"Plate layout parameter '{name}' changed. Invalidating all caches.")
+        elif name in tectonic_keys:
+            # This no longer invalidates the plate layout cache
+            self.tectonic_params_dirty = True
+            self.terrain_maps_dirty = True
+            self.climate_maps_dirty = True
+            self.logger.info(f"Tectonic parameter '{name}' changed. Invalidating tectonic, terrain and climate caches.")
         elif name in terrain_keys:
             self.terrain_maps_dirty = True
             self.climate_maps_dirty = True
@@ -839,13 +851,29 @@ class Application:
         wy = np.linspace(0, self.world_generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
         wx_grid, wy_grid = np.meshgrid(wx, wy)
 
-        # --- Stage 1: Tectonic Generation ---
-        # This is an expensive step, only run when tectonic params change.
+        # --- Stage 1: Tectonic Generation (Decoupled & Cached) ---
+        # Stage 1a: Recalculate the expensive Voronoi data ONLY if the plate layout has changed.
+        if self.plate_layout_dirty or self.cached_plate_ids is None:
+            self.logger.info("Plate layout changed. Recalculating Voronoi data...")
+            plate_ids, dist1, dist2 = self.world_generator.get_tectonic_data(wx_grid, wy_grid)
+            self.cached_plate_ids = plate_ids
+            self.cached_dist1 = dist1
+            self.cached_dist2 = dist2
+            self.plate_layout_dirty = False # Reset the flag
+            self.logger.info("Voronoi data caching complete.")
+
+        # Stage 1b: Recalculate the cheap influence and uplift maps if any tectonic param has changed.
         if self.tectonic_params_dirty or self.cached_tectonic_influence_map is None:
             self.logger.info("Tectonic parameters changed. Recalculating influence and uplift maps...")
-            _, influence_map = self.world_generator.get_tectonic_data(wx_grid, wy_grid)
-            self.cached_tectonic_influence_map = influence_map
+            # This now uses the cached distance data and is very fast.
+            from world_generator import tectonics # Import the module directly
+            from world_generator.config import CM_PER_KM
+            radius_cm = self.world_generator.settings['mountain_influence_radius_km'] * CM_PER_KM
+            self.cached_tectonic_influence_map = tectonics.calculate_influence_map(
+                self.cached_dist1, self.cached_dist2, radius_cm
+            )
             
+            # The uplift map also depends on the influence map, so it's recalculated here.
             self.cached_tectonic_uplift_map = self.world_generator.get_tectonic_uplift(
                 wx_grid, wy_grid, influence_map=self.cached_tectonic_influence_map
             )
