@@ -99,6 +99,9 @@ class Application:
         self.world_params_dirty = True # Flag to trigger regeneration
         # This will hold the result of the bake size analysis.
         self.estimated_uniform_ratio = 0.0
+        # --- Tectonic Caching (Rule 11) ---
+        self.cached_tectonic_influence_map = None
+        self.tectonic_params_dirty = True # Force initial generation.
         # This will hold the raw data arrays for the live preview, allowing the
         # tooltip to sample from the exact same data the renderer uses.
         self.live_preview_elevation_data = None
@@ -652,36 +655,20 @@ class Application:
 
             # --- Handle UI Events for Live Editing ---
             if event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
-                new_value = event.value
-                # Modify the generator's settings directly. This is the fix.
-                settings = self.world_generator.settings
-                
-                if event.ui_element == self.temp_slider:
-                    settings['target_sea_level_temp_c'] = new_value
-                elif event.ui_element == self.roughness_slider:
-                    settings['detail_noise_weight'] = new_value
-                elif event.ui_element == self.lapse_rate_slider:
-                    settings['lapse_rate_c_per_unit_elevation'] = new_value
-                elif event.ui_element == self.continent_size_slider:
-                    # When changing feature scale, the internal '_noise_scale' must also be updated.
-                    settings['terrain_base_feature_scale_km'] = new_value
-                    from world_generator.config import CM_PER_KM
-                    settings['base_noise_scale'] = new_value * CM_PER_KM
-                elif event.ui_element == self.terrain_amplitude_slider:
-                    settings['terrain_amplitude'] = new_value
-                elif event.ui_element == self.polar_drop_slider:
-                    settings['polar_temperature_drop_c'] = new_value
-                elif event.ui_element == self.mountain_smoothness_slider:
-                    settings['mountain_uplift_feature_scale_km'] = new_value
-                    # This requires re-calculating the internal noise scale
-                    from world_generator.config import CM_PER_KM
-                    settings['mountain_uplift_noise_scale'] = new_value * CM_PER_KM
-                elif event.ui_element == self.mountain_width_slider:
-                    settings['mountain_influence_radius_km'] = new_value
-                elif event.ui_element == self.tectonic_strength_slider:
-                    settings['mountain_uplift_strength'] = new_value
-
-                self.world_params_dirty = True
+                param_map = {
+                    self.temp_slider: 'target_sea_level_temp_c',
+                    self.roughness_slider: 'detail_noise_weight',
+                    self.lapse_rate_slider: 'lapse_rate_c_per_unit_elevation',
+                    self.continent_size_slider: 'terrain_base_feature_scale_km',
+                    self.terrain_amplitude_slider: 'terrain_amplitude',
+                    self.polar_drop_slider: 'polar_temperature_drop_c',
+                    self.mountain_smoothness_slider: 'mountain_uplift_feature_scale_km',
+                    self.mountain_width_slider: 'mountain_influence_radius_km',
+                    self.tectonic_strength_slider: 'mountain_uplift_strength'
+                }
+                param_name = param_map.get(event.ui_element)
+                if param_name:
+                    self._update_world_parameter(param_name, event.value)
             
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
                 if event.ui_element == self.bake_button:
@@ -754,12 +741,46 @@ class Application:
 
             # 5. Trigger a full regeneration of the live preview
             self.world_params_dirty = True
+            self.tectonic_params_dirty = True # Tectonics depend on world size
 
         except ValueError:
             self.logger.error("Invalid world size input. Please enter integers only.")
             # Optionally, reset the text to the current valid values
             self.world_width_input.set_text(str(self.config['world_generation_parameters']['world_width_chunks']))
             self.world_height_input.set_text(str(self.config['world_generation_parameters']['world_height_chunks']))
+
+    def _update_world_parameter(self, name: str, value):
+        """
+        A centralized method to update a world parameter and set the correct
+        dirty flags for the renderer and cache systems.
+        """
+        settings = self.world_generator.settings
+        
+        # 1. Update the setting's value
+        settings[name] = value
+        
+        # 2. Always trigger a general regeneration
+        self.world_params_dirty = True
+
+        # 3. Invalidate the tectonic cache if a relevant parameter changed
+        tectonic_keys = [
+            'num_tectonic_plates',
+            'mountain_influence_radius_km'
+        ]
+        if name in tectonic_keys:
+            self.tectonic_params_dirty = True
+            self.logger.info(f"Tectonic parameter '{name}' changed. Invalidating cache.")
+
+        # 4. Handle special cases that require more than just a value change
+        if name == 'terrain_base_feature_scale_km':
+            from world_generator.config import CM_PER_KM
+            settings['base_noise_scale'] = value * CM_PER_KM
+        elif name == 'mountain_uplift_feature_scale_km':
+            from world_generator.config import CM_PER_KM
+            settings['mountain_uplift_noise_scale'] = value * CM_PER_KM
+        elif name == 'num_tectonic_plates':
+            # Also update the UI label when the plate count changes
+            self.plate_count_label.set_text(str(int(value)))
 
     def _update_km_size_label(self):
         """Calculates and displays the world size in kilometers."""
@@ -778,25 +799,36 @@ class Application:
         Generates the raw data and color array for the current preview state.
         This centralizes the data generation logic previously in the renderer.
         """
-        # These constants are now correctly defined at the top of this file.
-        # The incorrect import has been removed.
-        
         # Create a coordinate grid for the entire world at preview resolution.
         wx = np.linspace(0, self.world_generator.world_width_cm, PREVIEW_RESOLUTION_WIDTH)
         wy = np.linspace(0, self.world_generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
         wx_grid, wy_grid = np.meshgrid(wx, wy)
 
-        # --- Generate all data layers first to allow for reuse (Rule 11) ---
-        # We now call the internal methods to get access to the intermediate layers
-        # needed for the new soil-aware rendering.
-        bedrock_data = self.world_generator._get_bedrock_elevation(wx_grid, wy_grid)
-        slope_data = self.world_generator._get_slope(bedrock_data)
-        soil_depth_data = self.world_generator._get_soil_depth(slope_data)
-        
-        # The final elevation is the bedrock plus the soil.
-        elevation_data = self.world_generator.get_elevation(wx_grid, wy_grid)
+        # --- Tectonic Caching and Sequential Pipeline (Rule 11) ---
+        # 1. Check if the cached tectonic map is invalid.
+        if self.tectonic_params_dirty or self.cached_tectonic_influence_map is None:
+            self.logger.info("Tectonic parameters changed. Recalculating influence map...")
+            _, influence_map = self.world_generator.get_tectonic_data(wx_grid, wy_grid)
+            self.cached_tectonic_influence_map = influence_map
+            self.tectonic_params_dirty = False
+            self.logger.info("Tectonic map caching complete.")
 
-        # Climate is calculated based on the FINAL combined elevation.
+        # 2. Generate tectonic uplift using the (possibly cached) influence map.
+        tectonic_uplift_map = self.world_generator.get_tectonic_uplift(
+            wx_grid, wy_grid, influence_map=self.cached_tectonic_influence_map
+        )
+
+        # 3. Generate bedrock, passing the uplift map to prevent recalculation.
+        bedrock_data = self.world_generator._get_bedrock_elevation(
+            wx_grid, wy_grid, tectonic_uplift_map=tectonic_uplift_map
+        )
+
+        # 4. Generate final elevation, passing the bedrock map to prevent recalculation.
+        elevation_data = self.world_generator.get_elevation(
+            wx_grid, wy_grid, bedrock_elevation=bedrock_data
+        )
+
+        # 5. Climate is calculated based on the FINAL combined elevation.
         temp_data = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data)
         humidity_data = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data, temp_data)
 
@@ -805,42 +837,38 @@ class Application:
         self.live_preview_temp_data = temp_data
         self.live_preview_humidity_data = humidity_data
 
-        # Select the correct color map based on the current view mode.
+        # --- Select the correct color map based on the current view mode ---
         if self.view_mode == "terrain":
-            # Pass the new soil_depth_data to the terrain color function.
-            return color_maps.get_terrain_color_array(elevation_data, temp_data, humidity_data, soil_depth_data)
-        elif self.view_mode == "temperature":
-            return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
-        elif self.view_mode == "humidity":
-            return color_maps.get_humidity_color_array(humidity_data, self.humidity_lut)
-        elif self.view_mode == "elevation":
-            return color_maps.get_elevation_color_array(elevation_data)
-        elif self.view_mode == "soil_depth":
-            # This is a temporary debug view to validate the soil depth calculation.
-            bedrock_data = self.world_generator._get_bedrock_elevation(wx_grid, wy_grid)
+            # We need soil depth for this view, so we calculate it on-demand here.
             slope_data = self.world_generator._get_slope(bedrock_data)
             soil_depth_data = self.world_generator._get_soil_depth(slope_data)
-            # We normalize the soil depth for visualization, so the deepest soil is white.
+            return color_maps.get_terrain_color_array(elevation_data, temp_data, humidity_data, soil_depth_data)
+        
+        elif self.view_mode == "temperature":
+            return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
+        
+        elif self.view_mode == "humidity":
+            return color_maps.get_humidity_color_array(humidity_data, self.humidity_lut)
+        
+        elif self.view_mode == "elevation":
+            return color_maps.get_elevation_color_array(elevation_data)
+        
+        elif self.view_mode == "soil_depth":
+            slope_data = self.world_generator._get_slope(bedrock_data)
+            soil_depth_data = self.world_generator._get_soil_depth(slope_data)
             max_depth = self.world_generator.settings['max_soil_depth_units']
             if max_depth > 0:
                 normalized_soil = soil_depth_data / max_depth
             else:
                 normalized_soil = np.zeros_like(soil_depth_data)
             return color_maps.get_elevation_color_array(normalized_soil)
+        
         else: # tectonic
-            # The tectonic view now shows the actual uplift noise map.
-            # This provides direct visual feedback on what is being added to the terrain.
-            tectonic_uplift_map = self.world_generator.get_tectonic_uplift(wx_grid, wy_grid)
-            
-            # We can reuse the elevation color function to render this as grayscale.
-            # The new model's output range is [0, 2 * strength].
             strength = self.world_generator.settings['mountain_uplift_strength']
             if strength > 0:
-                # Normalize from [0, 2 * strength] to [0, 1]
                 normalized_map = tectonic_uplift_map / (2 * strength)
             else:
                 normalized_map = np.zeros_like(tectonic_uplift_map)
-
             return color_maps.get_elevation_color_array(normalized_map)
 
     def _calculate_and_display_bake_size(self):
@@ -1058,23 +1086,12 @@ class Application:
                 slider = param_to_slider_map.get(param_name)
                 if slider:
                     slider.set_current_value(value)
-                    # Replicate the logic from the event handler to update the generator's state
-                    self.world_generator.settings[param_name] = value
-                    # Handle special cases that require recalculating internal scales
-                    if param_name == 'terrain_base_feature_scale_km':
-                        from world_generator.config import CM_PER_KM
-                        self.world_generator.settings['base_noise_scale'] = value * CM_PER_KM
-                    elif param_name == 'mountain_uplift_feature_scale_km':
-                        from world_generator.config import CM_PER_KM
-                        self.world_generator.settings['mountain_uplift_noise_scale'] = value * CM_PER_KM
+                    self._update_world_parameter(param_name, value)
                 elif param_name == 'num_tectonic_plates':
-                    self.world_generator.settings[param_name] = int(value)
-                    self.plate_count_label.set_text(str(int(value)))
+                    self._update_world_parameter(param_name, int(value))
                 else:
                     self.logger.warning(f"No UI element found for parameter '{param_name}'. Skipping.")
                     continue
-
-                self.world_params_dirty = True
 
                 # --- Force a single frame update and render ---
                 time_delta = self.clock.tick(self.tick_rate) / 1000.0
@@ -1098,7 +1115,7 @@ class Application:
                 pygame.display.flip()
 
                 # 3. Pause briefly so the change is visible
-                pygame.time.wait(500) # Wait 500 milliseconds
+                pygame.time.wait(100) # Wait 100 milliseconds
 
             # --- Stop Profiling and Report for the entire set ---
             profiler.disable()
@@ -1231,18 +1248,15 @@ class Application:
         """Handles clicks on the tectonic plate adjustment buttons."""
         settings = self.world_generator.settings
         current_plates = settings['num_tectonic_plates']
-        
+        new_plates = current_plates
+
         if ui_element == self.increase_plates_button:
-            # Define a reasonable upper limit
-            settings['num_tectonic_plates'] = min(250, current_plates + 1)
+            new_plates = min(250, current_plates + 1)
         elif ui_element == self.decrease_plates_button:
-            # Define a reasonable lower limit
-            settings['num_tectonic_plates'] = max(2, current_plates - 1)
+            new_plates = max(2, current_plates - 1)
         
-        # Check if the value actually changed
-        if settings['num_tectonic_plates'] != current_plates:
-            self.plate_count_label.set_text(str(settings['num_tectonic_plates']))
-            self.world_params_dirty = True
+        if new_plates != current_plates:
+            self._update_world_parameter('num_tectonic_plates', new_plates)
 
     def _check_bake_progress(self):
         """Polls the bake progress queue and updates the UI."""

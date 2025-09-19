@@ -137,7 +137,7 @@ class WorldGenerator:
         # are correctly reflected in the humidity calculations.
         pass
 
-    def _get_bedrock_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+    def _get_bedrock_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray, tectonic_uplift_map: np.ndarray = None) -> np.ndarray:
         """
         Generates the base bedrock layer by creating a stable continental terrain
         and then adding tectonic features as a final modification.
@@ -173,24 +173,25 @@ class WorldGenerator:
         # 3. Apply the amplitude shaping to the stable base terrain.
         shaped_base_terrain = np.power(normalized_base_terrain, self.settings['terrain_amplitude'])
 
-        # 4. Generate the tectonic uplift map. This is an elevation *modifier*.
-        # Its values are now guaranteed to be positive.
-        tectonic_modifier = self.get_tectonic_uplift(x_coords, y_coords)
+        # 4. Generate the tectonic uplift map if not provided.
+        if tectonic_uplift_map is None:
+            tectonic_uplift_map = self.get_tectonic_uplift(x_coords, y_coords)
 
         # 5. Add the tectonic modifier to the shaped base terrain.
-        final_bedrock = shaped_base_terrain + tectonic_modifier
+        final_bedrock = shaped_base_terrain + tectonic_uplift_map
 
         # 6. Clip the final result to the valid [0, 1] range.
         # This ensures tectonic activity cannot create impossible elevations.
         return np.clip(final_bedrock, 0.0, 1.0)
 
-    def get_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+    def get_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray, bedrock_elevation: np.ndarray = None) -> np.ndarray:
         """
         Generates the final elevation map by creating a bedrock layer and then
         depositing a variable-depth soil layer on top of it, only on land.
         """
-        # 1. Generate the foundational bedrock.
-        bedrock_elevation = self._get_bedrock_elevation(x_coords, y_coords)
+        # 1. Generate the foundational bedrock if not provided.
+        if bedrock_elevation is None:
+            bedrock_elevation = self._get_bedrock_elevation(x_coords, y_coords)
 
         # 2. Determine which parts of the bedrock are land.
         water_level = self.settings['terrain_levels']['water']
@@ -414,7 +415,7 @@ class WorldGenerator:
         )
         return plate_ids, influence_map
     
-    def get_tectonic_uplift(self, x_coords: np.ndarray, y_coords: np.ndarray) -> np.ndarray:
+    def get_tectonic_uplift(self, x_coords: np.ndarray, y_coords: np.ndarray, influence_map: np.ndarray = None) -> np.ndarray:
         """
         Generates a self-contained noise map representing mountain ranges that
         form along tectonic plate boundaries. The map is 0 in plate interiors.
@@ -429,9 +430,9 @@ class WorldGenerator:
             lacunarity=self.settings['base_noise_lacunarity']
         )
 
-        # 2. Get the tectonic influence map. This smooth gradient (0 to 1) will
-        #    define the large-scale shape and height of the mountain range.
-        _, influence_map = self.get_tectonic_data(x_coords, y_coords)
+        # 2. Get the tectonic influence map if not provided.
+        if influence_map is None:
+            _, influence_map = self.get_tectonic_data(x_coords, y_coords)
 
         # 3. Create the final uplift map.
         # The influence_map creates the solid mountain shape.
