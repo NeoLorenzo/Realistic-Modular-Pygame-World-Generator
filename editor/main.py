@@ -96,15 +96,26 @@ class Application:
         # --- State for Live Preview Mode ---
         # This MUST be initialized before _setup_ui() is called.
         self.live_preview_surface = None
-        self.world_params_dirty = True # Flag to trigger regeneration
         # This will hold the result of the bake size analysis.
         self.estimated_uniform_ratio = 0.0
-        # --- Tectonic Caching (Rule 11) ---
+
+        # --- Hierarchical Caching (Rule 11) ---
+        # Dirty flags to control the regeneration pipeline
+        self.tectonic_params_dirty = True
+        self.terrain_maps_dirty = True
+        self.climate_maps_dirty = True
+
+        # Cached data maps to avoid recalculation
         self.cached_tectonic_influence_map = None
-        self.tectonic_params_dirty = True # Force initial generation.
+        self.cached_tectonic_uplift_map = None
+        self.cached_bedrock_map = None
+        self.cached_slope_map = None
+        self.cached_soil_depth_map = None
+        self.cached_final_elevation_map = None
+
         # This will hold the raw data arrays for the live preview, allowing the
         # tooltip to sample from the exact same data the renderer uses.
-        self.live_preview_elevation_data = None
+        self.live_preview_elevation_data = None # This will now be a pointer to the cache
         self.live_preview_temp_data = None
         self.live_preview_humidity_data = None
         # Pre-compute color LUTs once to avoid doing it every frame (Rule 11)
@@ -591,21 +602,25 @@ class Application:
                 self._handle_events()
                 self._update()
 
-                # --- Live Preview Regeneration (Rule 5) ---
-                # If any parameter has changed, regenerate the single preview surface.
-                if self.world_params_dirty:
-                    self.logger.info(f"World parameters changed. Regenerating preview data for view mode: '{self.view_mode}'...")
-                    
+                # --- Staged Preview Regeneration (Rule 5 & 11) ---
+                # If any parameter has changed, regenerate the necessary parts of the pipeline.
+                is_dirty = self.tectonic_params_dirty or self.terrain_maps_dirty or self.climate_maps_dirty
+                if is_dirty:
+                    self.logger.info(f"Change detected. Regenerating preview data for view mode: '{self.view_mode}'...")
+
                     # The Application now orchestrates data generation for the preview.
                     color_array = self._generate_preview_color_array()
-                    
+
                     # Pass the final color data to the renderer to create the surface.
                     self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
-                    
+
                     # Reset the estimate label as the world has changed.
                     self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
-                    
-                    self.world_params_dirty = False
+
+                    # Reset all flags now that the regeneration is complete.
+                    self.tectonic_params_dirty = False
+                    self.terrain_maps_dirty = False
+                    self.climate_maps_dirty = False
                     self.logger.info("Live preview regeneration complete.")
 
                 # The new drawing method uses the pre-generated surface.
@@ -690,7 +705,9 @@ class Application:
                 if event.key == pygame.K_v:
                     self.current_view_mode_index = (self.current_view_mode_index + 1) % len(self.view_modes)
                     self.view_mode = self.view_modes[self.current_view_mode_index]
-                    self.world_params_dirty = True # Trigger regeneration on view change
+                    # The underlying data is unchanged, only the colorization needs to be redone.
+                    # Setting the climate flag is the cheapest way to trigger the regeneration pipeline.
+                    self.climate_maps_dirty = True
                     self.logger.info(f"Event: View switched to '{self.view_mode}'")
 
         # Handle continuous key presses for panning, but only if test is not running
@@ -740,8 +757,10 @@ class Application:
             self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
 
             # 5. Trigger a full regeneration of the live preview
-            self.world_params_dirty = True
-            self.tectonic_params_dirty = True # Tectonics depend on world size
+            # Set all dirty flags to true to force a full rebuild.
+            self.tectonic_params_dirty = True
+            self.terrain_maps_dirty = True
+            self.climate_maps_dirty = True
 
         except ValueError:
             self.logger.error("Invalid world size input. Please enter integers only.")
@@ -758,18 +777,32 @@ class Application:
         
         # 1. Update the setting's value
         settings[name] = value
-        
-        # 2. Always trigger a general regeneration
-        self.world_params_dirty = True
 
-        # 3. Invalidate the tectonic cache if a relevant parameter changed
+# 2. Define parameter categories
         tectonic_keys = [
             'num_tectonic_plates',
-            'mountain_influence_radius_km'
+            'mountain_influence_radius_km',
+            'mountain_uplift_feature_scale_km', # Tectonic smoothness affects uplift noise
+            'mountain_uplift_strength' # Controls the result of the uplift calculation
         ]
+        terrain_keys = [
+            'detail_noise_weight', # Roughness
+            'terrain_base_feature_scale_km', # Continent size
+            'terrain_amplitude' # Sharpness
+        ]
+        
+        # 3. Set dirty flags in a cascading manner
         if name in tectonic_keys:
             self.tectonic_params_dirty = True
-            self.logger.info(f"Tectonic parameter '{name}' changed. Invalidating cache.")
+            self.terrain_maps_dirty = True
+            self.climate_maps_dirty = True
+            self.logger.info(f"Tectonic parameter '{name}' changed. Invalidating all caches.")
+        elif name in terrain_keys:
+            self.terrain_maps_dirty = True
+            self.climate_maps_dirty = True
+            self.logger.info(f"Terrain parameter '{name}' changed. Invalidating terrain and climate caches.")
+        else: # Assume it's a climate-only parameter
+            self.climate_maps_dirty = True
 
         # 4. Handle special cases that require more than just a value change
         if name == 'terrain_base_feature_scale_km':
@@ -797,78 +830,83 @@ class Application:
     def _generate_preview_color_array(self) -> np.ndarray:
         """
         Generates the raw data and color array for the current preview state.
-        This centralizes the data generation logic previously in the renderer.
+        This method implements a staged, cached pipeline to ensure only the
+        necessary calculations are performed.
         """
         # Create a coordinate grid for the entire world at preview resolution.
+        # This is cheap and always needed.
         wx = np.linspace(0, self.world_generator.world_width_cm, PREVIEW_RESOLUTION_WIDTH)
         wy = np.linspace(0, self.world_generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
         wx_grid, wy_grid = np.meshgrid(wx, wy)
 
-        # --- Tectonic Caching and Sequential Pipeline (Rule 11) ---
-        # 1. Check if the cached tectonic map is invalid.
+        # --- Stage 1: Tectonic Generation ---
+        # This is an expensive step, only run when tectonic params change.
         if self.tectonic_params_dirty or self.cached_tectonic_influence_map is None:
-            self.logger.info("Tectonic parameters changed. Recalculating influence map...")
+            self.logger.info("Tectonic parameters changed. Recalculating influence and uplift maps...")
             _, influence_map = self.world_generator.get_tectonic_data(wx_grid, wy_grid)
             self.cached_tectonic_influence_map = influence_map
-            self.tectonic_params_dirty = False
+            
+            self.cached_tectonic_uplift_map = self.world_generator.get_tectonic_uplift(
+                wx_grid, wy_grid, influence_map=self.cached_tectonic_influence_map
+            )
             self.logger.info("Tectonic map caching complete.")
 
-        # 2. Generate tectonic uplift using the (possibly cached) influence map.
-        tectonic_uplift_map = self.world_generator.get_tectonic_uplift(
-            wx_grid, wy_grid, influence_map=self.cached_tectonic_influence_map
+        # --- Stage 2: Terrain Generation ---
+        # This runs if terrain or tectonic params change.
+        if self.terrain_maps_dirty or self.cached_final_elevation_map is None:
+            self.logger.info("Terrain parameters changed. Recalculating bedrock, soil, and final elevation...")
+            self.cached_bedrock_map = self.world_generator._get_bedrock_elevation(
+                wx_grid, wy_grid, tectonic_uplift_map=self.cached_tectonic_uplift_map
+            )
+            
+            # Manually perform the steps of get_elevation to cache intermediate maps
+            water_level = self.world_generator.settings['terrain_levels']['water']
+            land_mask = self.cached_bedrock_map >= water_level
+            self.cached_slope_map = self.world_generator._get_slope(self.cached_bedrock_map)
+            self.cached_soil_depth_map = self.world_generator._get_soil_depth(self.cached_slope_map)
+            self.cached_soil_depth_map[~land_mask] = 0.0
+            self.cached_final_elevation_map = np.clip(self.cached_bedrock_map + self.cached_soil_depth_map, 0.0, 1.0)
+            
+            self.live_preview_elevation_data = self.cached_final_elevation_map
+            self.logger.info("Terrain map caching complete.")
+
+        # --- Stage 3: Climate Generation ---
+        # This runs if any parameter changes, using the cached elevation map.
+        self.live_preview_temp_data = self.world_generator.get_temperature(
+            wx_grid, wy_grid, self.cached_final_elevation_map
+        )
+        self.live_preview_humidity_data = self.world_generator.get_humidity(
+            wx_grid, wy_grid, self.cached_final_elevation_map, self.live_preview_temp_data
         )
 
-        # 3. Generate bedrock, passing the uplift map to prevent recalculation.
-        bedrock_data = self.world_generator._get_bedrock_elevation(
-            wx_grid, wy_grid, tectonic_uplift_map=tectonic_uplift_map
-        )
-
-        # 4. Generate final elevation, passing the bedrock map to prevent recalculation.
-        elevation_data = self.world_generator.get_elevation(
-            wx_grid, wy_grid, bedrock_elevation=bedrock_data
-        )
-
-        # 5. Climate is calculated based on the FINAL combined elevation.
-        temp_data = self.world_generator.get_temperature(wx_grid, wy_grid, elevation_data)
-        humidity_data = self.world_generator.get_humidity(wx_grid, wy_grid, elevation_data, temp_data)
-
-        # Cache the raw data arrays for the tooltip to use.
-        self.live_preview_elevation_data = elevation_data
-        self.live_preview_temp_data = temp_data
-        self.live_preview_humidity_data = humidity_data
-
-        # --- Select the correct color map based on the current view mode ---
+        # --- Stage 4: Colorization ---
+        # This always runs to reflect the latest data, using the final cached maps.
         if self.view_mode == "terrain":
-            # We need soil depth for this view, so we calculate it on-demand here.
-            slope_data = self.world_generator._get_slope(bedrock_data)
-            soil_depth_data = self.world_generator._get_soil_depth(slope_data)
-            return color_maps.get_terrain_color_array(elevation_data, temp_data, humidity_data, soil_depth_data)
-        
+            return color_maps.get_terrain_color_array(
+                self.cached_final_elevation_map, 
+                self.live_preview_temp_data, 
+                self.live_preview_humidity_data, 
+                self.cached_soil_depth_map
+            )
         elif self.view_mode == "temperature":
-            return color_maps.get_temperature_color_array(temp_data, self.temp_lut)
-        
+            return color_maps.get_temperature_color_array(self.live_preview_temp_data, self.temp_lut)
         elif self.view_mode == "humidity":
-            return color_maps.get_humidity_color_array(humidity_data, self.humidity_lut)
-        
+            return color_maps.get_humidity_color_array(self.live_preview_humidity_data, self.humidity_lut)
         elif self.view_mode == "elevation":
-            return color_maps.get_elevation_color_array(elevation_data)
-        
+            return color_maps.get_elevation_color_array(self.cached_final_elevation_map)
         elif self.view_mode == "soil_depth":
-            slope_data = self.world_generator._get_slope(bedrock_data)
-            soil_depth_data = self.world_generator._get_soil_depth(slope_data)
             max_depth = self.world_generator.settings['max_soil_depth_units']
             if max_depth > 0:
-                normalized_soil = soil_depth_data / max_depth
+                normalized_soil = self.cached_soil_depth_map / max_depth
             else:
-                normalized_soil = np.zeros_like(soil_depth_data)
+                normalized_soil = np.zeros_like(self.cached_soil_depth_map)
             return color_maps.get_elevation_color_array(normalized_soil)
-        
         else: # tectonic
             strength = self.world_generator.settings['mountain_uplift_strength']
             if strength > 0:
-                normalized_map = tectonic_uplift_map / (2 * strength)
+                normalized_map = self.cached_tectonic_uplift_map / (2 * strength)
             else:
-                normalized_map = np.zeros_like(tectonic_uplift_map)
+                normalized_map = np.zeros_like(self.cached_tectonic_uplift_map)
             return color_maps.get_elevation_color_array(normalized_map)
 
     def _calculate_and_display_bake_size(self):
@@ -1097,7 +1135,8 @@ class Application:
                 time_delta = self.clock.tick(self.tick_rate) / 1000.0
 
                 # 1. Regenerate the world preview if dirty (which it is)
-                if self.world_params_dirty:
+                is_dirty = self.tectonic_params_dirty or self.terrain_maps_dirty or self.climate_maps_dirty
+                if is_dirty:
                     self.logger.debug("Regenerating preview for benchmark step...")
                     
                     # The profiler is already running, so we just call the function.
@@ -1105,7 +1144,11 @@ class Application:
 
                     self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
                     self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
-                    self.world_params_dirty = False
+                    
+                    # Reset all flags after regeneration
+                    self.tectonic_params_dirty = False
+                    self.terrain_maps_dirty = False
+                    self.climate_maps_dirty = False
                     self.logger.debug("Regeneration complete.")
 
                 # 2. Draw the world and UI to the screen
