@@ -116,6 +116,10 @@ class Application:
         self.cached_slope_map = None
         self.cached_soil_depth_map = None
         self.cached_final_elevation_map = None
+        self.cached_coastal_factor_map = None
+        self.cached_shadow_factor_map = None
+        self.cached_climate_noise_map = None
+        self.cached_biome_map = None
 
         # This will hold the raw data arrays for the live preview, allowing the
         # tooltip to sample from the exact same data the renderer uses.
@@ -125,6 +129,7 @@ class Application:
         # Pre-compute color LUTs once to avoid doing it every frame (Rule 11)
         self.temp_lut = color_maps.create_temperature_lut()
         self.humidity_lut = color_maps.create_humidity_lut()
+        self.biome_lut = color_maps.create_biome_color_lut()
 
         # --- Dependency Injection (Rule 7, DIP) ---
         # This block MUST be executed before _setup_ui() because the UI
@@ -898,24 +903,50 @@ class Application:
             self.live_preview_elevation_data = self.cached_final_elevation_map
             self.logger.info("Terrain map caching complete.")
 
+            # --- Cache all terrain-dependent factors ---
+            self.logger.info("Recalculating all terrain-dependent factors (humidity, climate noise)...")
+            self.cached_coastal_factor_map = self.world_generator.calculate_coastal_factor_map(
+                self.cached_final_elevation_map, wx_grid.shape
+            )
+            self.cached_shadow_factor_map = self.world_generator.calculate_shadow_factor_map(
+                self.cached_final_elevation_map, wx_grid.shape
+            )
+            self.cached_climate_noise_map = self.world_generator._generate_base_noise(
+                wx_grid, wy_grid,
+                seed_offset=self.world_generator.settings['temp_seed_offset'],
+                scale=self.world_generator.settings['climate_noise_scale']
+            )
+            self.logger.info("Terrain-dependent factor caching complete.")
+
         # --- Stage 3: Climate Generation ---
-        # This runs if any parameter changes, using the cached elevation map.
+        # This runs if any parameter changes, using the cached elevation map and factors.
         self.live_preview_temp_data = self.world_generator.get_temperature(
-            wx_grid, wy_grid, self.cached_final_elevation_map
+            wx_grid, wy_grid, self.cached_final_elevation_map,
+            base_noise=self.cached_climate_noise_map
         )
         self.live_preview_humidity_data = self.world_generator.get_humidity(
-            wx_grid, wy_grid, self.cached_final_elevation_map, self.live_preview_temp_data
+            wx_grid, wy_grid, self.cached_final_elevation_map, self.live_preview_temp_data,
+            coastal_factor_map=self.cached_coastal_factor_map,
+            shadow_factor_map=self.cached_shadow_factor_map
         )
 
-        # --- Stage 4: Colorization ---
-        # This always runs to reflect the latest data, using the final cached maps.
-        if self.view_mode == "terrain":
-            return color_maps.get_terrain_color_array(
-                self.cached_final_elevation_map, 
-                self.live_preview_temp_data, 
-                self.live_preview_humidity_data, 
+        # --- Stage 4: Biome Classification (if needed) ---
+        # The expensive biome calculation is now part of the main data pipeline
+        # and is only re-run when climate or terrain data has changed.
+        if self.climate_maps_dirty or self.cached_biome_map is None:
+            self.logger.info("Climate or terrain changed, recalculating biome map...")
+            self.cached_biome_map = color_maps.calculate_biome_map(
+                self.cached_final_elevation_map,
+                self.live_preview_temp_data,
+                self.live_preview_humidity_data,
                 self.cached_soil_depth_map
             )
+            self.logger.info("Biome map caching complete.")
+
+        # --- Stage 5: Colorization ---
+        # This always runs, but is now extremely fast for all view modes.
+        if self.view_mode == "terrain":
+            return color_maps.get_terrain_color_array(self.cached_biome_map, self.biome_lut)
         elif self.view_mode == "temperature":
             return color_maps.get_temperature_color_array(self.live_preview_temp_data, self.temp_lut)
         elif self.view_mode == "humidity":

@@ -345,52 +345,48 @@ class WorldGenerator:
         # Return the distance values from the map.
         return self._distance_map[map_y, map_x]
 
-    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray, elevation_data: np.ndarray, temperature_data_c: np.ndarray) -> np.ndarray:
-        """
-        Generates absolute humidity (g/m³) via on-the-fly analysis of the
-        final elevation data. This ensures humidity is always perfectly
-        synchronized with the current state of the world terrain.
-        """
-        # 1. --- On-the-fly Environmental Analysis ---
-        
-        # a) Find water sources from the provided, final elevation data.
+    def calculate_coastal_factor_map(self, elevation_data: np.ndarray, grid_shape: tuple) -> np.ndarray:
+        """Calculates the coastal humidity factor based on distance to water."""
         water_level = self.settings['terrain_levels']['water']
         water_mask = elevation_data < water_level
-
-        # b) Calculate distance to the nearest water for every point.
-        # If there is no water, all distances will be infinite.
         distance_grid_units = distance_transform_edt(np.logical_not(water_mask))
-        
-        # c) Calculate coastal factor with the new falloff rate.
-        # This is now done in grid units for simplicity and performance.
-        grid_falloff_dist = self.settings['max_coastal_distance_km'] * (x_coords.shape[1] / (self.world_width_cm / DEFAULTS.CM_PER_KM))
+        grid_falloff_dist = self.settings['max_coastal_distance_km'] * (grid_shape[1] / (self.world_width_cm / DEFAULTS.CM_PER_KM))
         normalized_distance = distance_grid_units / grid_falloff_dist
-        
         coastal_factor = 1.0 - np.clip(normalized_distance, 0, 1)
-        coastal_factor = np.power(coastal_factor, self.settings['humidity_coastal_falloff_rate'])
+        return np.power(coastal_factor, self.settings['humidity_coastal_falloff_rate'])
 
-        # d) Calculate rain shadow on-the-fly.
+    def calculate_shadow_factor_map(self, elevation_data: np.ndarray, grid_shape: tuple) -> np.ndarray:
+        """Calculates the rain shadow factor based on prevailing winds."""
         map_height, map_width = elevation_data.shape
         wind_angle_rad = np.radians(self.settings['prevailing_wind_direction_degrees'])
         wind_dx, wind_dy = -np.cos(wind_angle_rad), np.sin(wind_angle_rad)
-        
+        grid_falloff_dist = self.settings['max_coastal_distance_km'] * (grid_shape[1] / (self.world_width_cm / DEFAULTS.CM_PER_KM))
         y_indices, x_indices = np.mgrid[0:map_height, 0:map_width]
         upwind_x = x_indices + wind_dx * grid_falloff_dist
         upwind_y = y_indices + wind_dy * grid_falloff_dist
-        
         coords = np.array([upwind_y.ravel(), upwind_x.ravel()])
         upwind_elevations = map_coordinates(elevation_data, coords, order=1, mode='nearest').reshape(map_height, map_width)
-        
         elevation_diff = upwind_elevations - elevation_data
         mountain_height = self.settings['rain_shadow_mountain_threshold']
         shadow_map = np.clip((elevation_diff - mountain_height) / (1.0 - mountain_height), 0, 1)
-        shadow_factor = 1.0 - (shadow_map * self.settings['rain_shadow_strength'])
+        return 1.0 - (shadow_map * self.settings['rain_shadow_strength'])
 
-        # e) Combine factors to get relative humidity.
-        # This is now the final, deterministic relative humidity.
-        final_relative_humidity = np.clip(coastal_factor * shadow_factor, 0, 1)
+    def get_humidity(self, x_coords: np.ndarray, y_coords: np.ndarray, elevation_data: np.ndarray, temperature_data_c: np.ndarray, coastal_factor_map: np.ndarray = None, shadow_factor_map: np.ndarray = None) -> np.ndarray:
+        """
+        Generates absolute humidity (g/m³). Can accept pre-computed coastal
+        and shadow factor maps to dramatically improve performance.
+        """
+        # 1. --- Calculate Environmental Factors (if not provided) ---
+        if coastal_factor_map is None:
+            coastal_factor_map = self.calculate_coastal_factor_map(elevation_data, x_coords.shape)
 
-        # 2. --- Final Humidity Calculation ---
+        if shadow_factor_map is None:
+            shadow_factor_map = self.calculate_shadow_factor_map(elevation_data, x_coords.shape)
+
+        # 2. --- Combine factors to get relative humidity ---
+        final_relative_humidity = np.clip(coastal_factor_map * shadow_factor_map, 0, 1)
+
+        # 3. --- Final Absolute Humidity Calculation ---
         saturation_humidity = 5.0 * np.exp(temperature_data_c / 15.0)
         final_humidity_g_m3 = saturation_humidity * final_relative_humidity
 
