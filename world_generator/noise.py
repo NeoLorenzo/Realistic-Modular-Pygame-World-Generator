@@ -21,7 +21,7 @@ Data Contract:
 """
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 # Pre-defined gradient vectors for performance.
 _GRADIENT_VECTORS = np.array([[0, 1], [0, -1], [1, 0], [-1, 0]])
@@ -43,7 +43,7 @@ def _gradient(h, x, y):
     # Use explicit indexing for Numba compatibility
     return g[0] * x + g[1] * y
 
-@njit(cache=True, fastmath=True)
+@njit(cache=True, fastmath=True, parallel=True)
 def perlin_noise_2d(p, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
     """
     Generate 2D Perlin noise using a pre-computed permutation table.
@@ -54,7 +54,8 @@ def perlin_noise_2d(p, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
     # Enforce float32 for the output array
     total_noise = np.zeros((rows, cols), dtype=np.float32)
     
-    for i in range(rows):
+    # Use prange to enable Numba's automatic parallelization over the outer loop.
+    for i in prange(rows):
         for j in range(cols):
             # Ensure internal calculations use float32
             noise_val = np.float32(0.0)
