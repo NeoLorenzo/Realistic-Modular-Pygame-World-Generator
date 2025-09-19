@@ -35,5 +35,60 @@
             { "action": "pan", "dx": 10, "dy": 10, "frames": 100 },
             { "action": "pan", "dx": 0, "dy": 20, "frames": 100 }
         ]
+    },
+    "live_editor_benchmark": {
+        "enabled": true,
+        "steps": [
+            {
+                "description": "Sea Level Temp (°C)",
+                "parameter_name": "target_sea_level_temp_c",
+                "test_values": [-20.0, 15.0, 40.0]
+            },
+            {
+                "description": "Mountain Roughness",
+                "parameter_name": "detail_noise_weight",
+                "test_values": [0.0, 0.5, 1.0]
+            },
+            {
+                "description": "Mountain Coldness (°C Drop)",
+                "parameter_name": "lapse_rate_c_per_unit_elevation",
+                "test_values": [0.0, 50.0, 100.0]
+            },
+            {
+                "description": "Continent Size (km)",
+                "parameter_name": "terrain_base_feature_scale_km",
+                "test_values": [5.0, 100.0, 200.0]
+            },
+            {
+                "description": "Terrain Amplitude (Sharpness)",
+                "parameter_name": "terrain_amplitude",
+                "test_values": [0.5, 2.5, 5.0]
+            },
+            {
+                "description": "Equator-to-Pole Temp Drop (°C)",
+                "parameter_name": "polar_temperature_drop_c",
+                "test_values": [0.0, 40.0, 80.0]
+            },
+            {
+                "description": "Tectonic Smoothness (km)",
+                "parameter_name": "mountain_uplift_feature_scale_km",
+                "test_values": [2.0, 35.0, 75.0]
+            },
+            {
+                "description": "Tectonic Width (km)",
+                "parameter_name": "mountain_influence_radius_km",
+                "test_values": [10.0, 125.0, 250.0]
+            },
+            {
+                "description": "Tectonic Strength",
+                "parameter_name": "mountain_uplift_strength",
+                "test_values": [0.0, 2.5, 5.0]
+            },
+            {
+                "description": "Number of Tectonic Plates",
+                "parameter_name": "num_tectonic_plates",
+                "test_values": [2, 100, 250]
+            }
+        ]
     }
 }

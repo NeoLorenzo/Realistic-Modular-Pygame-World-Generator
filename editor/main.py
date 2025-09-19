@@ -139,6 +139,10 @@ class Application:
         self.benchmark_config = self.config.get('benchmark', {})
         self.is_benchmark_running = self.benchmark_config.get('enabled', False)
 
+        # --- Live Editor Benchmark State ---
+        self.live_editor_benchmark_config = self.config.get('live_editor_benchmark', {})
+        self.is_live_editor_benchmark_running = self.live_editor_benchmark_config.get('enabled', False)
+
         self._perf_test_path = []
         self._perf_test_current_action = None
         self._perf_test_action_frame_count = 0
@@ -376,8 +380,8 @@ class Application:
 
         self.mountain_width_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_settings.get('mountain_influence_radius_km', 50.0),
-            value_range=(10.0, 250.0),
+            start_value=world_settings.get('mountain_influence_radius_km', 5.0),
+            value_range=(5.0, 250.0),
             manager=self.ui_manager,
             container=self.ui_panel
         )
@@ -537,8 +541,16 @@ class Application:
         """The main application loop."""
         # Profiler is now enabled conditionally based on the run mode.
 
+        # --- Live Editor Performance Test Execution ---
+        if self.is_live_editor_benchmark_running:
+            # The benchmark measures its own timings; profiler overhead would skew results.
+            if self.profiler:
+                self.logger.info("Disabling cProfile for benchmark to ensure accurate timing.")
+                self.profiler = None
+            self._run_live_editor_benchmark()
+            self.is_running = False # Ensure the app exits after the test
         # --- Benchmark Mode Execution (Rule 11) ---
-        if self.is_benchmark_running:
+        elif self.is_benchmark_running:
             import time
             self.logger.info("Benchmark mode ENABLED. Application will exit after generation.")
             
@@ -983,7 +995,121 @@ class Application:
         self.tooltip.set_position((mouse_pos[0] + 15, mouse_pos[1] + 15))
         if not self.tooltip.visible:
             self.tooltip.show()
+
+    def _run_live_editor_benchmark(self):
+        """
+        Executes a series of automated, VISUAL tests to demonstrate the performance
+        of the live preview regeneration pipeline. This is not for timing, but for
+        visual confirmation.
+        """
+        self.logger.info("Live editor visual benchmark ENABLED. Running tests...")
+
+        # --- Fit world to screen for better viewing ---
+        drawable_width = self.screen_width - UI_PANEL_WIDTH
+        drawable_height = self.screen_height
         
+        # Calculate the required zoom to fit the world width and height into the drawable area
+        zoom_x = drawable_width / self.camera.world_width
+        zoom_y = drawable_height / self.camera.world_height
+        
+        # Use the smaller of the two zoom levels to ensure the entire world is visible
+        self.camera.zoom = min(zoom_x, zoom_y)
+        self.logger.info(f"Camera zoom adjusted to {self.camera.zoom:.6f} to fit screen.")
+        
+        # --- Map parameter names from config to the actual UI slider objects ---
+        param_to_slider_map = {
+            "target_sea_level_temp_c": self.temp_slider,
+            "detail_noise_weight": self.roughness_slider,
+            "lapse_rate_c_per_unit_elevation": self.lapse_rate_slider,
+            "terrain_base_feature_scale_km": self.continent_size_slider,
+            "terrain_amplitude": self.terrain_amplitude_slider,
+            "polar_temperature_drop_c": self.polar_drop_slider,
+            "mountain_uplift_feature_scale_km": self.mountain_smoothness_slider,
+            "mountain_influence_radius_km": self.mountain_width_slider,
+            "mountain_uplift_strength": self.tectonic_strength_slider,
+        }
+
+        test_steps = self.live_editor_benchmark_config.get('steps', [])
+        
+        for step in test_steps:
+            description = step['description']
+            param_name = step['parameter_name']
+            test_values = step['test_values']
+            
+            self.logger.info(f"--- Visually Testing Parameter: {description} ---")
+
+            # --- Start Profiling for the entire set of values ---
+            profiler = cProfile.Profile()
+            profiler.enable()
+
+            for value in test_values:
+                # --- Allow user to exit mid-benchmark ---
+                for event in pygame.event.get():
+                    if (event.type == pygame.QUIT or
+                       (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE)):
+                        self.logger.warning("Benchmark terminated early by user.")
+                        self.is_running = False
+                        profiler.disable() # Ensure profiler is stopped on early exit
+                        return
+                
+                self.logger.info(f"Setting '{description}' to value: {value}")
+                
+                # --- Programmatically update the UI and settings ---
+                slider = param_to_slider_map.get(param_name)
+                if slider:
+                    slider.set_current_value(value)
+                    # Replicate the logic from the event handler to update the generator's state
+                    self.world_generator.settings[param_name] = value
+                    # Handle special cases that require recalculating internal scales
+                    if param_name == 'terrain_base_feature_scale_km':
+                        from world_generator.config import CM_PER_KM
+                        self.world_generator.settings['base_noise_scale'] = value * CM_PER_KM
+                    elif param_name == 'mountain_uplift_feature_scale_km':
+                        from world_generator.config import CM_PER_KM
+                        self.world_generator.settings['mountain_uplift_noise_scale'] = value * CM_PER_KM
+                elif param_name == 'num_tectonic_plates':
+                    self.world_generator.settings[param_name] = int(value)
+                    self.plate_count_label.set_text(str(int(value)))
+                else:
+                    self.logger.warning(f"No UI element found for parameter '{param_name}'. Skipping.")
+                    continue
+
+                self.world_params_dirty = True
+
+                # --- Force a single frame update and render ---
+                time_delta = self.clock.tick(self.tick_rate) / 1000.0
+
+                # 1. Regenerate the world preview if dirty (which it is)
+                if self.world_params_dirty:
+                    self.logger.debug("Regenerating preview for benchmark step...")
+                    
+                    # The profiler is already running, so we just call the function.
+                    color_array = self._generate_preview_color_array()
+
+                    self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
+                    self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
+                    self.world_params_dirty = False
+                    self.logger.debug("Regeneration complete.")
+
+                # 2. Draw the world and UI to the screen
+                self.world_renderer.draw_live_preview(self.screen, self.camera, self.live_preview_surface)
+                self.ui_manager.update(time_delta)
+                self.ui_manager.draw_ui(self.screen)
+                pygame.display.flip()
+
+                # 3. Pause briefly so the change is visible
+                pygame.time.wait(500) # Wait 500 milliseconds
+
+            # --- Stop Profiling and Report for the entire set ---
+            profiler.disable()
+            s = io.StringIO()
+            ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
+            ps.print_stats(5)
+            # The log message now refers to the entire parameter test.
+            self.logger.info(f"\n--- Profiling Report for '{description}' (all values) ---\n{s.getvalue()}")
+
+        self.logger.info("Visual benchmark complete.")
+
     def _create_reverse_color_map(self):
         """
         Creates a mapping from RGB color tuples to terrain name strings.
@@ -1094,7 +1220,9 @@ class Application:
         # --- Log a summary to the console (User Request) ---
         s = io.StringIO()
         # Sort by cumulative time spent in the function
-        ps = pstats.Stats(self.profiler, stream=s).sort_stats('cumulative')
+        # Load the stats from the file that was just saved. This is more robust
+        # than passing the profiler object directly and avoids potential TypeErrors.
+        ps = pstats.Stats(filepath, stream=s).sort_stats('cumulative')
         ps.print_stats(log_count)
         
         self.logger.info(f"--- Top {log_count} Profiling Results ---\n{s.getvalue()}")

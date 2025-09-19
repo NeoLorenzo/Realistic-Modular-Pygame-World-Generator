@@ -166,7 +166,7 @@ MAX_SOIL_DEPTH_UNITS = 0.05
 # The feature scale for the noise that creates the mountain ranges themselves.
 MOUNTAIN_UPLIFT_FEATURE_SCALE_KM = 15.0
 # The radius, in km, around a plate boundary where mountains will form.
-MOUNTAIN_INFLUENCE_RADIUS_KM = 50.0
+MOUNTAIN_INFLUENCE_RADIUS_KM = 5.0
 # A multiplier for how high mountains get at the peak of a plate boundary.
 # This now controls the blending of the dedicated uplift noise layer.
 MOUNTAIN_UPLIFT_STRENGTH = 0.8
