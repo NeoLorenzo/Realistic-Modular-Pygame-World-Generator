@@ -22,29 +22,41 @@ BIOME_ID_DEEP_WATER = 1
 BIOME_ID_MID_WATER = 2
 BIOME_ID_SHALLOW_WATER = 3
 BIOME_ID_SAND = 4
-BIOME_ID_GRASS_DRY = 5
-BIOME_ID_GRASS = 6
-BIOME_ID_GRASS_LUSH = 7
+BIOME_ID_SUBTROPICAL_DESERT = 5
+BIOME_ID_TEMPERATE_GRASSLAND = 6
+BIOME_ID_SAVANNA = 7
 BIOME_ID_DIRT = 8
 BIOME_ID_MOUNTAIN = 9
 BIOME_ID_SNOW = 10
 BIOME_ID_ICE = 11
+BIOME_ID_TUNDRA = 12
+BIOME_ID_TAIGA = 13
+BIOME_ID_TEMPERATE_FOREST = 14
+BIOME_ID_TEMPERATE_RAINFOREST = 15
+BIOME_ID_TROPICAL_SEASONAL_FOREST = 16
+BIOME_ID_TROPICAL_RAINFOREST = 17
+
 
 # --- Default Color Mappings ---
 COLOR_MAP_TERRAIN = {
     # New 4-level water depth palette
-    "abyss": (0, 0, 50),          # Deepest water
-    "deep_water": (10, 20, 80),   # Deep
-    "mid_water": (20, 40, 120),   # Medium
-    "shallow_water": (26, 102, 255), # Shallowest
+    "abyss": (0, 0, 50),
+    "deep_water": (10, 20, 80),
+    "mid_water": (20, 40, 120),
+    "shallow_water": (26, 102, 255),
     "sand": (240, 230, 140),
-    # "grass" is now the "normal" grass color
-    "grass": (34, 139, 34),
-    # New grass variants for different biomes
-    "grass_lush": (0, 100, 0),
-    "grass_dry": (154, 205, 50),
     "dirt": (139, 69, 19),
-    "mountain": (112, 128, 144)
+    "mountain": (112, 128, 144),
+    # New Whittaker Biome Colors
+    "subtropical_desert": (205, 170, 125),
+    "temperate_grassland": (154, 205, 50),
+    "savanna": (189, 183, 107),
+    "tundra": (150, 150, 120),
+    "taiga": (0, 80, 60),
+    "temperate_forest": (34, 139, 34),
+    "temperate_rainforest": (0, 100, 0),
+    "tropical_seasonal_forest": (50, 150, 50),
+    "tropical_rainforest": (0, 60, 0),
 }
 
 COLOR_MAP_TEMPERATURE = {
@@ -96,22 +108,77 @@ def create_humidity_lut() -> np.ndarray:
 def create_biome_color_lut() -> np.ndarray:
     """Creates a LUT where the index is the Biome ID and the value is the RGB color."""
     return np.array([
-        COLOR_MAP_TERRAIN["abyss"],
-        COLOR_MAP_TERRAIN["deep_water"],
-        COLOR_MAP_TERRAIN["mid_water"],
-        COLOR_MAP_TERRAIN["shallow_water"],
-        COLOR_MAP_TERRAIN["sand"],
-        COLOR_MAP_TERRAIN["grass_dry"],
-        COLOR_MAP_TERRAIN["grass"],
-        COLOR_MAP_TERRAIN["grass_lush"],
-        COLOR_MAP_TERRAIN["dirt"],
-        COLOR_MAP_TERRAIN["mountain"],
-        COLOR_SNOW,
-        COLOR_ICE
+        COLOR_MAP_TERRAIN["abyss"],                       # 0
+        COLOR_MAP_TERRAIN["deep_water"],                  # 1
+        COLOR_MAP_TERRAIN["mid_water"],                   # 2
+        COLOR_MAP_TERRAIN["shallow_water"],               # 3
+        COLOR_MAP_TERRAIN["sand"],                        # 4
+        COLOR_MAP_TERRAIN["subtropical_desert"],          # 5
+        COLOR_MAP_TERRAIN["temperate_grassland"],         # 6
+        COLOR_MAP_TERRAIN["savanna"],                     # 7
+        COLOR_MAP_TERRAIN["dirt"],                        # 8
+        COLOR_MAP_TERRAIN["mountain"],                    # 9
+        COLOR_SNOW,                                       # 10
+        COLOR_ICE,                                        # 11
+        COLOR_MAP_TERRAIN["tundra"],                      # 12
+        COLOR_MAP_TERRAIN["taiga"],                       # 13
+        COLOR_MAP_TERRAIN["temperate_forest"],            # 14
+        COLOR_MAP_TERRAIN["temperate_rainforest"],        # 15
+        COLOR_MAP_TERRAIN["tropical_seasonal_forest"],    # 16
+        COLOR_MAP_TERRAIN["tropical_rainforest"],         # 17
     ], dtype=np.uint8)
 
 # --- Biome & Color Array Generation Functions ---
 EXPOSED_ROCK_SOIL_THRESHOLD = 0.001
+
+def _classify_climate_biomes(biome_map: np.ndarray, temperature_values: np.ndarray, humidity_values: np.ndarray, biome_zone_mask: np.ndarray) -> np.ndarray:
+    """Helper to apply climate-based biome classification to a specific zone."""
+    thresholds = DEFAULTS.BIOME_THRESHOLDS
+    if np.any(biome_zone_mask):
+        zone_temps = temperature_values[biome_zone_mask]
+        zone_humidity = humidity_values[biome_zone_mask]
+
+        # --- Whittaker Biome Classification ---
+        # The order of these conditions is critical. We start with the most
+        # restrictive (e.g., coldest, driest, wettest) and work our way to the
+        # more general temperate biomes.
+
+        conditions = [
+            # 1. Coldest Biomes (regardless of humidity)
+            zone_temps < thresholds["tundra_max_temp"],
+            zone_temps < thresholds["taiga_max_temp"],
+
+            # 2. Driest Biomes (hot and cold deserts)
+            (zone_humidity < thresholds["desert_max_humidity"]) & (zone_temps >= thresholds["hot_desert_min_temp"]),
+            zone_humidity < thresholds["desert_max_humidity"],
+
+            # 3. Wettest Biomes (rainforests)
+            (zone_temps > thresholds["temperate_max_temp"]) & (zone_humidity > thresholds["forest_max_humidity"]),
+            (zone_temps <= thresholds["temperate_max_temp"]) & (zone_humidity > thresholds["forest_max_humidity"]),
+
+            # 4. Mid-range Tropical Biomes
+            (zone_temps > thresholds["temperate_max_temp"]) & (zone_humidity > thresholds["grassland_max_humidity"]),
+            (zone_temps > thresholds["temperate_max_temp"]), # Catches Savanna
+
+            # 5. Mid-range Temperate Biomes (default cases)
+            zone_humidity > thresholds["grassland_max_humidity"],
+        ]
+
+        choices = [
+            BIOME_ID_TUNDRA,
+            BIOME_ID_TAIGA,
+            BIOME_ID_SUBTROPICAL_DESERT,
+            BIOME_ID_DIRT, # Cold desert/barren
+            BIOME_ID_TROPICAL_RAINFOREST,
+            BIOME_ID_TEMPERATE_RAINFOREST,
+            BIOME_ID_TROPICAL_SEASONAL_FOREST,
+            BIOME_ID_SAVANNA,
+            BIOME_ID_TEMPERATE_FOREST,
+        ]
+
+        # The final default is Temperate Grassland
+        biome_map[biome_zone_mask] = np.select(conditions, choices, default=BIOME_ID_TEMPERATE_GRASSLAND)
+    return biome_map
 
 def calculate_biome_map(elevation_values: np.ndarray, temperature_values: np.ndarray, humidity_values: np.ndarray, soil_depth_data: np.ndarray) -> np.ndarray:
     """
@@ -135,7 +202,8 @@ def calculate_biome_map(elevation_values: np.ndarray, temperature_values: np.nda
             land_elevations < levels["grass"],
             land_elevations < levels["dirt"]
         ]
-        choices = [BIOME_ID_SAND, BIOME_ID_GRASS, BIOME_ID_DIRT]
+        # Replace the old, undefined BIOME_ID_GRASS with its new equivalent.
+        choices = [BIOME_ID_SAND, BIOME_ID_TEMPERATE_FOREST, BIOME_ID_DIRT]
         biome_map[land_mask] = np.select(conditions, choices, default=BIOME_ID_MOUNTAIN)
 
     if np.any(water_mask):
@@ -155,17 +223,7 @@ def calculate_biome_map(elevation_values: np.ndarray, temperature_values: np.nda
 
     # --- 3. Climate-Driven Biome Logic ---
     biome_zone_mask = (elevation_values >= levels["sand"]) & (elevation_values < levels["dirt"]) & ~exposed_rock_mask
-    if np.any(biome_zone_mask):
-        zone_temps = temperature_values[biome_zone_mask]
-        zone_humidity = humidity_values[biome_zone_mask]
-        conditions = [
-            (zone_temps > thresholds["sand_desert_min_temp_c"]) & (zone_humidity < thresholds["normal_grass_min_humidity_g_m3"]),
-            (zone_humidity < thresholds["arid_grass_min_humidity_g_m3"]) | (zone_temps < thresholds["grass_min_temp_c"]) | (zone_temps > thresholds["grass_max_temp_c"]),
-            (zone_humidity >= thresholds["lush_grass_min_humidity_g_m3"]),
-            (zone_humidity >= thresholds["normal_grass_min_humidity_g_m3"])
-        ]
-        choices = [BIOME_ID_SAND, BIOME_ID_DIRT, BIOME_ID_GRASS_LUSH, BIOME_ID_GRASS]
-        biome_map[biome_zone_mask] = np.select(conditions, choices, default=BIOME_ID_GRASS_DRY)
+    biome_map = _classify_climate_biomes(biome_map, temperature_values, humidity_values, biome_zone_mask)
 
     # --- 4. Final Frost and Ice Layers (Override everything else) ---
     ice_mask = (temperature_values <= DEFAULTS.ICE_FORMATION_TEMP_C) & water_mask

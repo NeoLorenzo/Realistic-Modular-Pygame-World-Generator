@@ -122,19 +122,22 @@ RAIN_SHADOW_MOUNTAIN_THRESHOLD = 0.3
 
 # --- Biome Thresholds (Rule 3 & 8) ---
 # A dictionary to hold all climate parameters that define biome transitions.
+# These values are based on a simplified Whittaker biome model.
 BIOME_THRESHOLDS = {
-    # Temperature range for any grass to survive.
-    "grass_min_temp_c": -5.0,
-    "grass_max_temp_c": 40.0,
+    # Temperature Bands (°C)
+    "tundra_max_temp": -5.0,
+    "taiga_max_temp": 3.0,
+    "temperate_max_temp": 18.0,
+    # tropical is anything above temperate_max_temp
 
-    # Humidity thresholds defining biome type. These are now clear bands.
-    "lush_grass_min_humidity_g_m3": 12.0,  # Above this -> Lush Grass
-    "normal_grass_min_humidity_g_m3": 4.0, # Above this -> Normal Grass
-    "arid_grass_min_humidity_g_m3": 2.0,   # Below this -> No Grass (Dirt)
-                                           # Between 2.0 and 4.0 -> Dry Grass
+    # Humidity Bands (g/m³)
+    "desert_max_humidity": 5.0,
+    "grassland_max_humidity": 10.0,
+    "forest_max_humidity": 17.0,
+    # rainforest is anything above forest_max_humidity
 
-    # Temperature at which arid/barren land becomes sand desert.
-    "sand_desert_min_temp_c": 35.0
+    # Special Overrides
+    "hot_desert_min_temp": 20.0,
 }
 
 

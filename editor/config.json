@@ -37,7 +37,7 @@
         ]
     },
     "live_editor_benchmark": {
-        "enabled": true,
+        "enabled": false,
         "steps": [
             {
                 "description": "Sea Level Temp (°C)",
