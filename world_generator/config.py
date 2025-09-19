@@ -180,3 +180,13 @@ PLACEHOLDER_RESOLUTION = 8 # Lower-res version for instant previews (Rule 8)
 CHUNK_SIZE_CM = 10000   # 100m = 10,000 cm. This is the core unit.
 DEFAULT_WORLD_WIDTH_CHUNKS = 800
 DEFAULT_WORLD_HEIGHT_CHUNKS = 450
+
+# --- World Edge Control (Rule 8) ---
+# The generation mode for the world's edges.
+# 'default': No change, terrain generates to the edge.
+# 'island': Fades the terrain elevation to water level at the edges.
+# 'valley': Fades the terrain elevation to mountain level at the edges.
+WORLD_EDGE_MODE = 'default'
+# The distance from the edge, as a percentage of the world's shorter dimension,
+# over which the blend effect occurs. 0.1 means the fade happens over the outer 10%.
+WORLD_EDGE_BLEND_DISTANCE = 0.1

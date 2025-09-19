@@ -306,9 +306,6 @@ These features will deepen the simulation's realism and provide greater artistic
 *   **New Simulation Layer: Air Pressure:** To enhance the scientific grounding of the climate model, a new air pressure layer will be added.
     *   **Implementation:** Following **Rule 8 (Scientifically-Grounded Abstraction)**, a new method `get_air_pressure(elevation_data)` will be added to the `WorldGenerator`. This will use a simplified version of the real-world barometric formula to calculate air pressure (in kPa or a similar unit) based on altitude. This new data layer will be available as a new view mode and can be used in the future to drive more complex wind and weather simulations.
 
-*   **World Edge Generation Control:** This feature will provide users with direct artistic control over the world's boundaries, allowing them to easily create contained continents or islands.
-    *   **Implementation:** A new UI element (e.g., a dropdown menu or checkbox) will be added to the editor, offering options like "Default", "Island Mode" (water border), and "Valley Mode" (mountain border). In the `WorldGenerator`, a 2D falloff map will be applied during the final stages of bedrock generation. For "Island Mode," this map will smoothly multiply the elevation down to zero at the world's edges. For "Valley Mode," it will blend the elevation up towards one, creating a containing mountain range.
-
 *   **Hydraulic Erosion & River Networks:** An algorithm to simulate water flow, carving rivers from mountains to the sea and creating more realistic drainage basins and deltas.
 
 ## Architectural Principles

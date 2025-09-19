@@ -89,6 +89,8 @@ class Application:
         # Tooltip
         self.tooltip = None
         self.last_mouse_world_pos = (None, None)
+        # World Edge UI
+        self.world_edge_dropdown = None
         
         # --- Bake Communication ---
         self.bake_progress_queue = None
@@ -428,6 +430,24 @@ class Application:
         )
         current_y += UI_SLIDER_HEIGHT + UI_PADDING
 
+        # --- World Edge Controls ---
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
+            text="World Edge Shape",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_ELEMENT_HEIGHT
+
+        self.world_edge_dropdown = pygame_gui.elements.UIDropDownMenu(
+            options_list=['Default', 'Island', 'Valley'],
+            starting_option='Default',
+            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_BUTTON_HEIGHT),
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+        current_y += UI_BUTTON_HEIGHT + UI_PADDING
+
                 # --- Tectonic Plate Controls ---
         pygame_gui.elements.UILabel(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
@@ -703,6 +723,12 @@ class Application:
                     self._calculate_and_display_bake_size()
                 else:
                     self._handle_plate_button_press(event.ui_element)
+            
+            elif event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED:
+                if event.ui_element == self.world_edge_dropdown:
+                    # Convert the user-friendly text to the lowercase key the generator expects.
+                    selected_mode = event.text.lower()
+                    self._update_world_parameter('world_edge_mode', selected_mode)
 
             # --- Handle user-driven events only if test is not running ---
             if event.type == pygame.MOUSEWHEEL:
@@ -798,7 +824,8 @@ class Application:
         terrain_keys = [
             'detail_noise_weight', # Roughness
             'terrain_base_feature_scale_km', # Continent size
-            'terrain_amplitude' # Sharpness
+            'terrain_amplitude', # Sharpness
+            'world_edge_mode' # World shape
         ]
         
         # 3. Set dirty flags in a cascading manner

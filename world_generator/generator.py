@@ -99,6 +99,8 @@ class WorldGenerator:
             'mountain_influence_radius_km': self.user_config.get('mountain_influence_radius_km', DEFAULTS.MOUNTAIN_INFLUENCE_RADIUS_KM),
             'mountain_uplift_strength': self.user_config.get('mountain_uplift_strength', DEFAULTS.MOUNTAIN_UPLIFT_STRENGTH),
             'max_soil_depth_units': self.user_config.get('max_soil_depth_units', DEFAULTS.MAX_SOIL_DEPTH_UNITS),
+            'world_edge_mode': self.user_config.get('world_edge_mode', DEFAULTS.WORLD_EDGE_MODE),
+            'world_edge_blend_distance': self.user_config.get('world_edge_blend_distance', DEFAULTS.WORLD_EDGE_BLEND_DISTANCE),
         }
 
         # --- Convert KM feature scales to internal CM noise scales ---
@@ -179,10 +181,60 @@ class WorldGenerator:
 
         # 5. Add the tectonic modifier to the shaped base terrain.
         final_bedrock = shaped_base_terrain + tectonic_uplift_map
+        
+        # 6. Apply world edge shaping if a non-default mode is selected.
+        edge_mode = self.settings['world_edge_mode']
+        if edge_mode != 'default':
+            falloff_map = self._generate_falloff_map(final_bedrock.shape)
+            
+            if edge_mode == 'island':
+                # Multiply elevation by the falloff map to fade to zero (water).
+                final_bedrock *= falloff_map
+            elif edge_mode == 'valley':
+                # Invert the falloff map to create a "bowl" shape.
+                # Blend the current elevation towards 1.0 (mountains) at the edges.
+                inverse_falloff = 1.0 - falloff_map
+                final_bedrock = (final_bedrock * falloff_map) + inverse_falloff
 
-        # 6. Clip the final result to the valid [0, 1] range.
-        # This ensures tectonic activity cannot create impossible elevations.
+        # 7. Clip the final result to the valid [0, 1] range.
+        # This ensures all modifications cannot create impossible elevations.
         return np.clip(final_bedrock, 0.0, 1.0)
+
+    def _generate_falloff_map(self, shape: tuple) -> np.ndarray:
+        """
+        Generates a 2D map that is 1.0 in the center and smoothly falls off
+        to 0.0 at the edges. The falloff distance is controlled by the
+        'world_edge_blend_distance' setting.
+        """
+        height, width = shape
+        
+        # Create 1D arrays representing normalized distance from the center for both axes.
+        # The values go from 1.0 at the edge to 0.0 at the center and back to 1.0.
+        x_dist_from_center = np.abs(np.linspace(-1, 1, width))
+        y_dist_from_center = np.abs(np.linspace(-1, 1, height))
+        
+        # Create a 2D grid representing the distance from the center.
+        # We use np.maximum to create a square-shaped falloff zone.
+        xv, yv = np.meshgrid(x_dist_from_center, y_dist_from_center)
+        dist_from_center = np.maximum(xv, yv)
+        
+        # Define the point where the blend to the edge begins.
+        blend_dist = self.settings['world_edge_blend_distance']
+        blend_start_point = 1.0 - blend_dist
+        
+        # Calculate the falloff value. It will be 0 for the central part of the map
+        # and will increase from 0 to 1 inside the blend zone.
+        falloff_value = (dist_from_center - blend_start_point) / blend_dist
+        falloff_value = np.clip(falloff_value, 0, 1)
+        
+        # The final map should be 1.0 in the center and 0.0 at the edge.
+        final_map = 1.0 - falloff_value
+        
+        # Apply a smoothing curve (power of 2) to make the transition less linear
+        # and more natural.
+        final_map = final_map**2
+        
+        return final_map
 
     def get_elevation(self, x_coords: np.ndarray, y_coords: np.ndarray, bedrock_elevation: np.ndarray = None) -> np.ndarray:
         """
