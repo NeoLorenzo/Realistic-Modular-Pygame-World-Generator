@@ -5,5 +5,6 @@ pygame-gui
 numpy
 numba
 scipy
-tqdm
 Pillow
+tqdm
+scikit-image

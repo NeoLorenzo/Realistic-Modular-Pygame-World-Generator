@@ -31,7 +31,7 @@ class Camera:
     def world_to_screen(self, world_x, world_y):
         screen_x = (world_x - self.x) * self.zoom + self.screen_width / 2
         screen_y = (world_y - self.y) * self.zoom + self.screen_height / 2
-        return int(screen_x), int(screen_y)
+        return screen_x, screen_y
 
     def screen_to_world(self, screen_x, screen_y):
         world_x = (screen_x - self.screen_width / 2) / self.zoom + self.x

@@ -5,27 +5,16 @@ import os
 import json
 import logging
 import logging.config
-import queue
-# import pygame # MOVED
+import time
 import cProfile
 import pstats
 import io
 from datetime import datetime
-# import pygame_gui # MOVED
-import subprocess
-import time
-import hashlib
 import numpy as np
-import threading
-from . import baker
-
-# The sys.path manipulation is no longer needed when running as a module.
 
 from world_generator.generator import WorldGenerator
 # Import the color_maps module to access its functions.
 from world_generator import color_maps
-# from renderer import WorldRenderer # MOVED
-# from camera import Camera # MOVED
 
 # --- UI Constants (Rule 1) ---
 UI_PANEL_WIDTH = 320
@@ -50,17 +39,21 @@ ESTIMATED_COMPRESSED_CHUNK_SIZE_KB = 0.5
 ESTIMATE_GRID_WIDTH = 160
 ESTIMATE_GRID_HEIGHT = 90
 
-class Application:
-    """The main application class for the basic viewer."""
+class EditorState:
+    """The main application state for the live editor."""
 
-    def __init__(self):
-        self._setup_logging()
-        self.logger.info("Application starting.")
+    def __init__(self, app):
+        # --- Core Application References ---
+        self.app = app
+        self.logger = app.logger
+        self.config = app.config
+        self.screen = app.screen
+        self.clock = app.clock
+        self.tick_rate = app.tick_rate
+        
+        self.logger.info("EditorState starting.")
 
-        self.config = self._load_config()
-        self._setup_pygame()
-
-                # --- State ---
+        # --- State ---
         self.view_modes = ["terrain", "temperature", "humidity", "elevation", "tectonic", "soil_depth"]
         self.current_view_mode_index = 0
         self.view_mode = self.view_modes[self.current_view_mode_index]
@@ -84,16 +77,11 @@ class Application:
         # Bake Controls
         self.bake_button = None
         self.size_estimate_label = None
-        self.bake_progress_bar = None
-        self.bake_status_label = None
         # Tooltip
         self.tooltip = None
         self.last_mouse_world_pos = (None, None)
         # World Edge UI
         self.world_edge_dropdown = None
-        
-        # --- Bake Communication ---
-        self.bake_progress_queue = None
         
         # --- State for Live Preview Mode ---
         # This MUST be initialized before _setup_ui() is called.
@@ -180,80 +168,41 @@ class Application:
 
         self.is_running = True
 
-    def _setup_logging(self):
-        """Initializes the logging system from a config file."""
-        log_config_path = 'editor/logging_config.json'
-        # This path must match the relative path used in the JSON config.
-        log_dir = 'logs'
-        
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-            
-        with open(log_config_path, 'rt') as f:
-            log_config = json.load(f)
-        
-        # Tell the logger where to create its file, overriding the JSON path.
-        # This makes the script's behavior independent of the current working directory.
-        log_config['handlers']['file']['filename'] = os.path.join(log_dir, 'viewer.log')
-        
-        logging.config.dictConfig(log_config)
-        self.logger = logging.getLogger(__name__)
-
-    def _load_config(self) -> dict:
-        """Loads simulation parameters from the config file."""
-        config_path = 'editor/config.json'
-        self.logger.info(f"Loading configuration from {config_path}")
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            self.logger.critical(f"Configuration file not found at {config_path}. Exiting.")
-            sys.exit(1)
-        except json.JSONDecodeError:
-            self.logger.critical(f"Error decoding JSON from {config_path}. Exiting.")
-            sys.exit(1)
-
-    def _setup_pygame(self):
-        """Initializes Pygame and the display window."""
-        pygame.init()
-        display_config = self.config['display']
-        self.screen_width = display_config['screen_width']
-        self.screen_height = display_config['screen_height']
-        
-        flags = 0
-        if display_config.get('fullscreen', False):
-            flags = pygame.FULLSCREEN
-            self.logger.info("Initializing display in Fullscreen mode.")
-            # In fullscreen, we ignore width/height and use the native resolution
-            self.screen = pygame.display.set_mode((0, 0), flags)
-            # Update screen dimensions to the actual resolution chosen
-            self.screen_width, self.screen_height = self.screen.get_size()
-            # This is important for the camera's aspect ratio calculations
-            self.config['display']['screen_width'] = self.screen_width
-            self.config['display']['screen_height'] = self.screen_height
+        # --- Handle Special Run Modes ---
+        if self.is_live_editor_benchmark_running:
+            if self.profiler:
+                self.logger.info("Disabling cProfile for benchmark to ensure accurate timing.")
+                self.profiler = None
+            self._run_live_editor_benchmark()
+            self.is_running = False # Signal immediate exit after benchmark
+        elif self.is_benchmark_running:
+            self.logger.info("Benchmark mode ENABLED. Application will exit after generation.")
+            if self.profiler: self.profiler.enable()
+            start_time = time.perf_counter()
+            # This is a placeholder for a future benchmark of the live preview generation
+            self.world_renderer.generate_live_preview_surface(
+                world_params=self.config['world_generation_parameters'],
+                view_mode=self.view_mode
+            )
+            end_time = time.perf_counter()
+            if self.profiler: self.profiler.disable()
+            duration = end_time - start_time
+            self.logger.info(f"Benchmark complete. Live preview generation took: {duration:.3f} seconds.")
+            self.is_running = False # Signal immediate exit after benchmark
         else:
-            self.logger.info(f"Initializing display in Windowed mode ({self.screen_width}x{self.screen_height}).")
-            self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-
-        pygame.display.set_caption("Realistic Modular World Generator")
-        self.clock = pygame.time.Clock()
-        self.tick_rate = display_config['clock_tick_rate']
-        
-        # Load the zoom threshold from config and set it as an instance attribute.
-        # This fixes the AttributeError crash.
-        self.high_res_threshold = self.config['camera']['high_res_request_zoom_threshold']
-        
-        self.logger.info("Pygame initialized successfully.")
+            self.logger.info("Entering interactive editor mode.")
+            if self.profiler:
+                self.profiler.enable()
 
     def _setup_ui(self):
         """Initializes the pygame_gui manager and creates the UI layout."""
-        self.ui_manager = pygame_gui.UIManager((self.screen_width, self.screen_height))
+        self.ui_manager = pygame_gui.UIManager((self.app.screen_width, self.app.screen_height))
         self.logger.info("UI Manager initialized.")
 
         # --- Create the main UI Panel ---
         panel_rect = pygame.Rect(
-            self.screen_width - UI_PANEL_WIDTH, 0,
-            UI_PANEL_WIDTH, self.screen_height
+            self.app.screen_width - UI_PANEL_WIDTH, 0,
+            UI_PANEL_WIDTH, self.app.screen_height
         )
         self.ui_panel = pygame_gui.elements.UIPanel(
             relative_rect=panel_rect,
@@ -545,28 +494,13 @@ class Application:
 
         self.bake_button = pygame_gui.elements.UIButton(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_BUTTON_HEIGHT),
-            text="Bake World",
+            text="Bake World (Disabled)",
             manager=self.ui_manager,
             container=self.ui_panel
         )
+        # The bake button is now just a placeholder and will do nothing.
+        self.bake_button.disable()
         current_y += UI_BUTTON_HEIGHT + UI_PADDING
-
-        # --- Bake Progress UI ---
-        self.bake_progress_bar = pygame_gui.elements.UIProgressBar(
-            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
-            manager=self.ui_manager,
-            container=self.ui_panel,
-            visible=False  # Initially hidden
-        )
-        current_y += UI_ELEMENT_HEIGHT
-
-        self.bake_status_label = pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
-            text="",
-            manager=self.ui_manager,
-            container=self.ui_panel,
-            visible=False  # Initially hidden
-        )
 
         # --- Tooltip Initialization ---
         # Create the tooltip using a UITextBox, which is the correct element for
@@ -580,109 +514,9 @@ class Application:
             visible=False
         )
 
-    def run(self):
-        """The main application loop."""
-        # Profiler is now enabled conditionally based on the run mode.
-
-        # --- Live Editor Performance Test Execution ---
-        if self.is_live_editor_benchmark_running:
-            # The benchmark measures its own timings; profiler overhead would skew results.
-            if self.profiler:
-                self.logger.info("Disabling cProfile for benchmark to ensure accurate timing.")
-                self.profiler = None
-            self._run_live_editor_benchmark()
-            self.is_running = False # Ensure the app exits after the test
-        # --- Benchmark Mode Execution (Rule 11) ---
-        elif self.is_benchmark_running:
-            import time
-            self.logger.info("Benchmark mode ENABLED. Application will exit after generation.")
-            
-            # Profile ONLY the loading screen.
-            if self.profiler:
-                self.profiler.enable()
-
-            start_time = time.perf_counter()
-            # This is a placeholder for a future benchmark of the live preview generation
-            self.world_renderer.generate_live_preview_surface(
-                world_params=self.config['world_generation_parameters'],
-                view_mode=self.view_mode
-            )
-            end_time = time.perf_counter()
-            
-            if self.profiler:
-                self.profiler.disable() # Disable immediately to isolate the measurement.
-
-            duration = end_time - start_time
-            self.logger.info(f"Benchmark complete. Live preview generation took: {duration:.3f} seconds.")
-            
-            self.is_running = False
-        else:
-            # The loading screen is no longer called.
-            self.logger.info("Entering main loop.")
-            
-            # Profile ONLY the interactive session.
-            if self.profiler:
-                self.profiler.enable()
-
-        try:
-            while self.is_running:
-                time_delta = self.clock.tick(self.tick_rate) / 1000.0
-                
-                self._handle_events()
-                self._update()
-
-                # --- Staged Preview Regeneration (Rule 5 & 11) ---
-                # If any parameter has changed, regenerate the necessary parts of the pipeline.
-                is_dirty = self.tectonic_params_dirty or self.terrain_maps_dirty or self.climate_maps_dirty
-                if is_dirty:
-                    self.logger.info(f"Change detected. Regenerating preview data for view mode: '{self.view_mode}'...")
-
-                    # The Application now orchestrates data generation for the preview.
-                    color_array = self._generate_preview_color_array()
-
-                    # Pass the final color data to the renderer to create the surface.
-                    self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
-
-                    # Reset the estimate label as the world has changed.
-                    self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
-
-                    # Reset all flags now that the regeneration is complete.
-                    self.tectonic_params_dirty = False
-                    self.terrain_maps_dirty = False
-                    self.climate_maps_dirty = False
-                    self.logger.info("Live preview regeneration complete.")
-
-                # The new drawing method uses the pre-generated surface.
-                self.world_renderer.draw_live_preview(self.screen, self.camera, self.live_preview_surface)
-                
-                # --- UI Processing ---
-                self.ui_manager.update(time_delta)
-                self.ui_manager.draw_ui(self.screen)
-
-                pygame.display.flip()
-                self.frame_count += 1
-
-                # Performance test exit condition
-                if self.is_perf_test_running and self.frame_count >= self.perf_test_config.get('duration_frames', 1000):
-                    self.logger.info(f"Performance test complete after {self.frame_count} frames.")
-                    self.is_running = False
-
-        except Exception as e:
-            self.logger.critical("An unhandled exception occurred!", exc_info=True)
-        finally:
-            # The profiler is disabled here for the normal run case.
-            # For the benchmark case, it's already disabled, but this call is safe.
-            if self.profiler:
-                self.profiler.disable()
-                self._report_profiling_results()
-
-            self.logger.info("Exiting application.")
-            pygame.quit()
-            sys.exit()
-
-    def _handle_events(self):
-        """Processes user input and other events."""
-        for event in pygame.event.get():
+    def handle_events(self, events):
+        """Processes user input and other events for this state."""
+        for event in events:
             # Pass events to the UI Manager first
             self.ui_manager.process_events(event)
 
@@ -715,9 +549,7 @@ class Application:
                     self._update_world_parameter(param_name, event.value)
             
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
-                if event.ui_element == self.bake_button:
-                    self._start_threaded_bake()
-                elif event.ui_element == self.apply_size_button:
+                if event.ui_element == self.apply_size_button:
                     self._apply_world_size_changes()
                 elif event.ui_element == self.calculate_size_button:
                     self._calculate_and_display_bake_size()
@@ -757,6 +589,37 @@ class Application:
                 self.camera.pan(-pan_speed, 0)
             if keys[pygame.K_d]:
                 self.camera.pan(pan_speed, 0)
+
+    def update(self, time_delta):
+        """Update state logic. Returns a signal for the state machine."""
+        self._update()
+        self.ui_manager.update(time_delta)
+
+        # Performance test exit condition
+        if self.is_perf_test_running and self.frame_count >= self.perf_test_config.get('duration_frames', 1000):
+            self.logger.info(f"Performance test complete after {self.frame_count} frames.")
+            self.is_running = False
+        
+        if not self.is_running:
+            return "QUIT" # Signal to the main app to exit
+        return None
+
+    def draw(self, screen):
+        """Renders the scene for this state."""
+        # --- Staged Preview Regeneration (Rule 5 & 11) ---
+        is_dirty = self.tectonic_params_dirty or self.terrain_maps_dirty or self.climate_maps_dirty
+        if is_dirty:
+            self.logger.info(f"Change detected. Regenerating preview data for view mode: '{self.view_mode}'...")
+            color_array = self._generate_preview_color_array()
+            self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
+            self.size_estimate_label.set_text("Estimated Size: (Recalculate Needed)")
+            self.tectonic_params_dirty = False
+            self.terrain_maps_dirty = False
+            self.climate_maps_dirty = False
+            self.logger.info("Live preview regeneration complete.")
+
+        self.world_renderer.draw_live_preview(screen, self.camera, self.live_preview_surface)
+        self.ui_manager.draw_ui(screen)
 
     def _apply_world_size_changes(self):
         """
@@ -881,13 +744,21 @@ class Application:
         # This is cheap and always needed.
         wx = np.linspace(0, self.world_generator.world_width_cm, PREVIEW_RESOLUTION_WIDTH)
         wy = np.linspace(0, self.world_generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
+        # The live preview pipeline requires the default 'xy' indexing for its
+        # non-square, frame-based calculations. This is DIFFERENT from the baker.
         wx_grid, wy_grid = np.meshgrid(wx, wy)
 
         # --- Stage 1: Tectonic Generation (Decoupled & Cached) ---
         # Stage 1a: Recalculate the expensive Voronoi data ONLY if the plate layout has changed.
         if self.plate_layout_dirty or self.cached_plate_ids is None:
             self.logger.info("Plate layout changed. Recalculating Voronoi data...")
-            plate_ids, dist1, dist2 = self.world_generator.get_tectonic_data(wx_grid, wy_grid)
+            plate_ids, dist1, dist2 = self.world_generator.get_tectonic_data(
+                wx_grid, wy_grid,
+                self.world_generator.world_width_cm,
+                self.world_generator.world_height_cm,
+                self.world_generator.settings['num_tectonic_plates'],
+                self.world_generator.settings['seed']
+            )
             self.cached_plate_ids = plate_ids
             self.cached_dist1 = dist1
             self.cached_dist2 = dist2
@@ -994,75 +865,6 @@ class Application:
             else:
                 normalized_map = np.zeros_like(self.cached_tectonic_uplift_map)
             return color_maps.get_elevation_color_array(normalized_map)
-
-    def _calculate_and_display_bake_size(self):
-        """
-        Performs an on-demand analysis of the world to provide a hyper-accurate
-        bake size estimate that accounts for both uniform chunk compression and
-        content-based deduplication.
-        """
-        self.logger.info("Calculating bake size estimate...")
-        self.size_estimate_label.set_text("Estimating... Please Wait")
-
-        # 1. Generate preview data for terrain, which serves as our proxy.
-        color_array = self._generate_preview_color_array()
-
-        # 2. Analyze the preview data by simulating the baker's logic.
-        h, w, _ = color_array.shape
-        grid_h, grid_w = ESTIMATE_GRID_HEIGHT, ESTIMATE_GRID_WIDTH
-        cell_h, cell_w = h // grid_h, w // grid_w
-
-        if cell_h == 0 or cell_w == 0:
-            self.logger.warning("Preview resolution too small for analysis.")
-            self.size_estimate_label.set_text("Error: Preview too small")
-            return
-
-        unique_hashes = set()
-        unique_uniform_count = 0
-        unique_palettized_count = 0
-        unique_full_count = 0
-
-        for i in range(grid_h):
-            for j in range(grid_w):
-                cell = color_array[i*cell_h:(i+1)*cell_h, j*cell_w:(j+1)*cell_w]
-                # Skip empty cells that can result from integer division
-                if cell.size == 0:
-                    continue
-                
-                cell_hash = hashlib.md5(cell.tobytes()).hexdigest()
-
-                if cell_hash not in unique_hashes:
-                    unique_hashes.add(cell_hash)
-                    
-                    # Tier 1: Check for uniform.
-                    if (cell == cell[0, 0]).all():
-                        unique_uniform_count += 1
-                    else:
-                        # Tier 2: Check for low color count.
-                        num_colors = len(np.unique(cell.reshape(-1, 3), axis=0))
-                        if num_colors <= 256:
-                            unique_palettized_count += 1
-                        else:
-                            # Tier 3: Fallback to full.
-                            unique_full_count += 1
-        
-        # 3. Use the absolute count of unique patterns from the preview as the estimate.
-        if not unique_hashes: return
-
-        num_view_modes = len(self.view_modes)
-
-        # 4. Calculate the final size based on the absolute number and mix of unique chunks.
-        size_kb_uniform = unique_uniform_count * ESTIMATED_COMPRESSED_CHUNK_SIZE_KB
-        size_kb_palettized = unique_palettized_count * ESTIMATED_PALETTIZED_CHUNK_SIZE_KB
-        size_kb_full = unique_full_count * ESTIMATED_CHUNK_SIZE_KB
-        
-        # The total size is the sum of the sizes of all unique chunks found,
-        # multiplied by the number of view modes (terrain, temp, etc.).
-        total_kb = (size_kb_uniform + size_kb_palettized + size_kb_full) * num_view_modes
-        total_gb = total_kb / (1024 * 1024)
-
-        self.size_estimate_label.set_text(f"Estimated Bake Size: {total_gb:.2f} GB")
-        self.logger.info(f"Bake size estimation complete. Result: {total_gb:.2f} GB")
 
     def _update_tooltip(self):
         """
@@ -1281,40 +1083,9 @@ class Application:
         self.known_colors_list = list(self.color_to_terrain_map.keys())
         self.known_colors_array = np.array(self.known_colors_list)
 
-    def _start_threaded_bake(self):
-        """
-        Launches the baker function in a separate, non-blocking thread and
-        establishes a queue for progress updates.
-        """
-        self.logger.info("Bake process requested by user.")
-        self.bake_button.set_text("Baking in Progress...")
-        self.bake_button.disable()
-
-        # Reset and show the progress UI
-        self.bake_progress_bar.set_current_progress(0)
-        self.bake_progress_bar.show()
-        self.bake_status_label.set_text("Baking...")
-        self.bake_status_label.show()
-
-        bake_config = self.config.copy()
-        bake_config['world_generation_parameters'] = self.world_generator.settings
-
-        # Create the communication queue for this bake instance.
-        self.bake_progress_queue = queue.Queue()
-
-        # Create and start the background thread.
-        bake_thread = threading.Thread(
-            target=baker.bake_world,
-            args=(bake_config, self.bake_progress_queue),
-            daemon=True
-        )
-        bake_thread.start()
-        self.logger.info("Successfully launched background bake thread.")
-
     def _update(self):
         """Update application state. Runs the performance test if active."""
         self._update_tooltip()
-        self._check_bake_progress()
 
         if not self.is_perf_test_running:
             return
@@ -1365,13 +1136,16 @@ class Application:
 
         # --- Log a summary to the console (User Request) ---
         s = io.StringIO()
-        # Sort by cumulative time spent in the function
-        # Load the stats from the file that was just saved. This is more robust
-        # than passing the profiler object directly and avoids potential TypeErrors.
-        ps = pstats.Stats(filepath, stream=s).sort_stats('cumulative')
-        ps.print_stats(log_count)
-        
-        self.logger.info(f"--- Top {log_count} Profiling Results ---\n{s.getvalue()}")
+        try:
+            # Sort by cumulative time spent in the function
+            # Load the stats from the file that was just saved. This is more robust
+            # than passing the profiler object directly and avoids potential TypeErrors.
+            ps = pstats.Stats(filepath, stream=s).sort_stats('cumulative')
+            ps.print_stats(log_count)
+            self.logger.info(f"--- Top {log_count} Profiling Results ---\n{s.getvalue()}")
+        except (TypeError, EOFError) as e:
+            self.logger.warning(f"Could not read profiling data from {filepath}. "
+                              f"The file might be empty or corrupted. Reason: {e}")
 
     def _handle_plate_button_press(self, ui_element):
         """Handles clicks on the tectonic plate adjustment buttons."""
@@ -1387,37 +1161,114 @@ class Application:
         if new_plates != current_plates:
             self._update_world_parameter('num_tectonic_plates', new_plates)
 
-    def _check_bake_progress(self):
-        """Polls the bake progress queue and updates the UI."""
-        if self.bake_progress_queue:
-            try:
-                message = self.bake_progress_queue.get_nowait()
-                self.logger.info(f"BAKER MSG: {message}") # Keep logging for debug
+class Application:
+    """The main application class, responsible for managing states and the main loop."""
 
-                status = message.get("status")
-                if status == "running":
-                    progress = message.get("progress", 0.0)
-                    self.bake_progress_bar.set_current_progress(progress)
-                    self.bake_status_label.set_text(f"Baking... {int(progress * 100)}%")
+    def __init__(self):
+        self._setup_logging()
+        self.logger.info("Application starting.")
+        self.config = self._load_config()
+
+        # --- Lazy Imports (Rule 7 / Performance) ---
+        # The BakedWorldRenderer is no longer needed.
+        global pygame, pygame_gui, WorldRenderer, Camera
+        import pygame
+        import pygame_gui
+        from .renderer import WorldRenderer
+        from .camera import Camera
+
+        self._setup_pygame()
+
+        # --- State Machine ---
+        # Start directly in the EditorState, bypassing the main menu.
+        self.active_state = EditorState(self)
+        self.is_running = True
+        self.selected_world_path = None
+
+    def _setup_logging(self):
+        """Initializes the logging system from a config file."""
+        log_config_path = 'editor/logging_config.json'
+        log_dir = 'logs'
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        with open(log_config_path, 'rt') as f:
+            log_config = json.load(f)
+        log_config['handlers']['file']['filename'] = os.path.join(log_dir, 'viewer.log')
+        logging.config.dictConfig(log_config)
+        self.logger = logging.getLogger(__name__)
+
+    def _load_config(self) -> dict:
+        """Loads simulation parameters from the config file."""
+        config_path = 'editor/config.json'
+        self.logger.info(f"Loading configuration from {config_path}")
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            self.logger.critical(f"Configuration file not found at {config_path}. Exiting.")
+            sys.exit(1)
+        except json.JSONDecodeError:
+            self.logger.critical(f"Error decoding JSON from {config_path}. Exiting.")
+            sys.exit(1)
+
+    def _setup_pygame(self):
+        """Initializes Pygame and the display window."""
+        pygame.init()
+        display_config = self.config['display']
+        self.screen_width = display_config['screen_width']
+        self.screen_height = display_config['screen_height']
+        
+        flags = 0
+        if display_config.get('fullscreen', False):
+            flags = pygame.FULLSCREEN
+            self.logger.info("Initializing display in Fullscreen mode.")
+            self.screen = pygame.display.set_mode((0, 0), flags)
+            self.screen_width, self.screen_height = self.screen.get_size()
+            self.config['display']['screen_width'] = self.screen_width
+            self.config['display']['screen_height'] = self.screen_height
+        else:
+            self.logger.info(f"Initializing display in Windowed mode ({self.screen_width}x{self.screen_height}).")
+            self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+
+        pygame.display.set_caption("Realistic Modular World Generator")
+        self.clock = pygame.time.Clock()
+        self.tick_rate = display_config['clock_tick_rate']
+        self.logger.info("Pygame initialized successfully.")
+
+    def run(self):
+        """The main application loop that drives the active state."""
+        try:
+            while self.is_running:
+                time_delta = self.clock.tick(self.tick_rate) / 1000.0
                 
-                elif status in ["complete", "error"]:
-                    self.bake_status_label.set_text(message.get("message", "Done!"))
-                    self.bake_progress_bar.hide()
-                    self.bake_button.set_text("Bake World")
-                    self.bake_button.enable()
-                    self.bake_progress_queue = None
+                # 1. Handle Events
+                events = pygame.event.get()
+                self.active_state.handle_events(events)
 
-            except queue.Empty:
-                pass
+                # 2. Update State
+                signal = self.active_state.update(time_delta)
+                
+                # 3. Handle State Transitions
+                if signal: # If a signal was returned
+                    if signal == "QUIT":
+                        self.is_running = False
+
+                # 4. Draw
+                self.active_state.draw(self.screen)
+
+                # 4. Flip Display
+                pygame.display.flip()
+                
+        except Exception as e:
+            self.logger.critical("An unhandled exception occurred in the main loop!", exc_info=True)
+        finally:
+            self.logger.info("Exiting application.")
+            # The active state may have a profiler that needs reporting
+            if hasattr(self.active_state, 'profiler') and self.active_state.profiler:
+                self.active_state._report_profiling_results()
+            pygame.quit()
+            sys.exit()
 
 if __name__ == '__main__':
-    # --- Lazy Imports (Rule 7 / Performance) ---
-    # These are imported here so that worker processes spawned by the baker
-    # do not import heavy GUI libraries they don't need.
-    import pygame
-    import pygame_gui
-    from renderer import WorldRenderer
-    from camera import Camera
-
     app = Application()
     app.run()

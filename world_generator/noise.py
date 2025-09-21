@@ -50,7 +50,9 @@ def perlin_noise_2d(p, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
     This function is JIT-compiled with Numba for maximum performance.
     It uses explicit loops, which Numba compiles to efficient machine code.
     """
+    # The input arrays x and y are now guaranteed to be the same shape.
     rows, cols = x.shape
+    
     # Enforce float32 for the output array
     total_noise = np.zeros((rows, cols), dtype=np.float32)
     
@@ -63,6 +65,7 @@ def perlin_noise_2d(p, x, y, octaves=1, persistence=0.5, lacunarity=2.0):
             frequency = np.float32(1.0)
             
             for _ in range(octaves):
+                # Use the standard, correct sampling method for 2D arrays.
                 x_sample = x[i, j] * frequency
                 y_sample = y[i, j] * frequency
 

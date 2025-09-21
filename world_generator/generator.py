@@ -34,22 +34,21 @@ class WorldGenerator:
     Generates and manages the raw data for a procedurally generated world.
     This class is backend-only and does not handle any visualization.
     """
-    def __init__(self, config: dict, logger: logging.Logger, distance_map_data: dict = None):
+    def __init__(self, config: dict, logger: logging.Logger, permutation_table: np.ndarray = None):
         """
         Initializes the world generator.
 
         Args:
             config (dict): User-defined parameters to override defaults.
             logger (logging.Logger): The logger instance for all output.
-            distance_map_data (dict, optional): Pre-computed distance map data to inject.
+            permutation_table (np.ndarray, optional): A pre-computed noise
+                permutation table. If None, one will be generated from the seed.
         """
         self.logger = logger
         self.user_config = config
         self.logger.info("WorldGenerator initializing...")
 
         # --- Consolidate Configuration ---
-        # The generator is now the single source of truth for its settings,
-        # merging user overrides with its internal defaults.
         self.settings = {
             'seed': self.user_config.get('seed', DEFAULTS.DEFAULT_SEED),
             'temp_seed_offset': self.user_config.get('temp_seed_offset', DEFAULTS.TEMP_SEED_OFFSET),
@@ -57,7 +56,6 @@ class WorldGenerator:
             'tectonic_plate_seed_offset': self.user_config.get('tectonic_plate_seed_offset', DEFAULTS.TECTONIC_PLATE_SEED_OFFSET),
             'mountain_uplift_seed_offset': self.user_config.get('mountain_uplift_seed_offset', DEFAULTS.MOUNTAIN_UPLIFT_SEED_OFFSET),
             
-            # Load human-readable feature scales (in km)
             'terrain_base_feature_scale_km': self.user_config.get('terrain_base_feature_scale_km', DEFAULTS.TERRAIN_BASE_FEATURE_SCALE_KM),
             'terrain_detail_feature_scale_km': self.user_config.get('terrain_detail_feature_scale_km', DEFAULTS.TERRAIN_DETAIL_FEATURE_SCALE_KM),
             'climate_feature_scale_km': self.user_config.get('climate_feature_scale_km', DEFAULTS.CLIMATE_FEATURE_SCALE_KM),
@@ -104,8 +102,6 @@ class WorldGenerator:
         }
 
         # --- Convert KM feature scales to internal CM noise scales ---
-        # This is the core of the unit translation. The rest of the code can
-        # continue to use the '_noise_scale' values without change.
         self.settings['base_noise_scale'] = self.settings['terrain_base_feature_scale_km'] * DEFAULTS.CM_PER_KM
         self.settings['detail_noise_scale'] = self.settings['terrain_detail_feature_scale_km'] * DEFAULTS.CM_PER_KM
         self.settings['climate_noise_scale'] = self.settings['climate_feature_scale_km'] * DEFAULTS.CM_PER_KM
@@ -117,10 +113,15 @@ class WorldGenerator:
         self.world_height_cm = self.settings['world_height_chunks'] * self.settings['chunk_size_cm']
 
         # --- Initialize Noise ---
-        p = np.arange(256, dtype=int)
-        rng = np.random.default_rng(self.seed)
-        rng.shuffle(p)
-        self._p = np.stack([p, p]).flatten() # Permutation table for noise
+        if permutation_table is not None:
+            self._p = permutation_table
+            self.logger.debug("Initialized with injected permutation table.")
+        else:
+            self.logger.debug("No permutation table provided, generating new one from seed.")
+            p = np.arange(256, dtype=int)
+            rng = np.random.default_rng(self.seed)
+            rng.shuffle(p)
+            self._p = np.stack([p, p]).flatten()
 
         self.logger.info(f"WorldGenerator initialized with seed: {self.seed}")
         # Log dimensions in both base units (cm) and human-readable units (km) for clarity.
@@ -175,12 +176,17 @@ class WorldGenerator:
         # 3. Apply the amplitude shaping to the stable base terrain.
         shaped_base_terrain = np.power(normalized_base_terrain, self.settings['terrain_amplitude'])
 
-        # 4. Generate the tectonic uplift map if not provided.
-        if tectonic_uplift_map is None:
-            tectonic_uplift_map = self.get_tectonic_uplift(x_coords, y_coords)
+        # 4. Add the tectonic modifier to the shaped base terrain.
+        # The caller (live preview or baker) is now responsible for providing
+        # the tectonic_uplift_map. This simplifies the logic and prevents
+        # accidental, expensive recalculations inside this method.
+        if tectonic_uplift_map is not None:
+            final_bedrock = shaped_base_terrain + tectonic_uplift_map
+        else:
+            final_bedrock = shaped_base_terrain
 
-        # 5. Add the tectonic modifier to the shaped base terrain.
-        final_bedrock = shaped_base_terrain + tectonic_uplift_map
+        # 5. Apply world edge shaping if a non-default mode is selected.
+        edge_mode = self.settings['world_edge_mode']
         
         # 6. Apply world edge shaping if a non-default mode is selected.
         edge_mode = self.settings['world_edge_mode']
@@ -448,16 +454,19 @@ class WorldGenerator:
             self.settings['max_absolute_humidity_g_m3']
         )
     
-    def get_tectonic_data(self, x_coords: np.ndarray, y_coords: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_tectonic_data(self, x_coords: np.ndarray, y_coords: np.ndarray, world_width_cm: float, world_height_cm: float, num_plates: int, seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Generates the raw Voronoi data for tectonic plates.
         This is an expensive operation that should be cached by the caller.
         """
+        # CRITICAL FIX: Use the dedicated tectonic plate seed offset
+        plate_seed = seed + self.settings['tectonic_plate_seed_offset']
+        
         plate_ids, dist1, dist2 = tectonics.get_voronoi_data(
             x_coords, y_coords,
-            self.world_width_cm, self.world_height_cm,
-            self.settings['num_tectonic_plates'],
-            self.seed + self.settings['tectonic_plate_seed_offset']
+            world_width_cm, world_height_cm,
+            num_plates,
+            plate_seed
         )
         return plate_ids, dist1, dist2
     

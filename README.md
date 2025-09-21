@@ -2,7 +2,7 @@
 
 A standalone Python library and interactive design tool for generating complex, scientifically-grounded worlds. Designed from the ground up for modularity, performance, and realism, this package allows developers to seamlessly integrate a powerful world-generation engine into any Python-based simulation, game, or project.
 
-The core philosophy is to create a data-first engine that produces emergent, believable climate and geological systems based on interconnected physical principles. The world features a **layered terrain model** with bedrock and slope-based soil deposition, a dynamic climate model with **prevailing winds** and **rain shadows**, and **climate-driven biomes**. The interactive editor allows for rapid iteration and design before committing to a final, high-performance "baked" world.
+The core philosophy is to create a data-first engine that produces emergent, believable climate and geological systems based on interconnected physical principles. The world features a **layered terrain model** with bedrock and slope-based soil deposition, a dynamic climate model with **prevailing winds** and **rain shadows**, and **climate-driven biomes**. The interactive editor allows for rapid iteration and design.
 
 ## Table of Contents
 
@@ -10,15 +10,11 @@ The core philosophy is to create a data-first engine that produces emergent, bel
     *   [1. True Modularity (Plug-and-Play)](#1-true-modularity-plug-and-play)
     *   [2. Scientifically-Grounded Realism](#2-scientifically-grounded-realism)
     *   [3. Rapid, Interactive Design](#3-rapid-interactive-design)
-    *   [4. Efficiency and Performance](#4-efficiency-and-performance)
 *   [Project Structure](#project-structure)
-*   [System Architecture: The Two-Tier Workflow](#system-architecture-the-two-tier-workflow)
-    *   [Tier 1: The Live Editor](#tier-1-the-live-editor)
-    *   [Tier 2: The Integrated Baker](#tier-2-the-integrated-baker)
+*   [System Architecture: The Live Editor](#system-architecture-the-live-editor)
     *   [The Generation Pipeline: From Seed to Climate](#the-generation-pipeline-from-seed-to-climate)
 *   [Configuration Deep Dive](#configuration-deep-dive)
 *   [Performance & Optimization](#performance--optimization)
-    *   [The Optimization Journey & Architectural Lessons](#the-optimization-journey--architectural-lessons)
 *   [Getting Started](#getting-started)
     *   [Prerequisites](#prerequisites)
     *   [Installation & Running the Editor](#installation--running-the-editor)
@@ -26,7 +22,7 @@ The core philosophy is to create a data-first engine that produces emergent, bel
 *   [Using the Generator in Your Project](#using-the-generator-in-your-project)
     *   [Basic Usage](#basic-usage)
     *   [Advanced Usage: Generating and Visualizing a Region](#advanced-usage-generating-and-visualizing-a-region)
-*   [Roadmap & Future Features](#roadmap--future-features)
+*   [Roadmap: Rebuilding the Baker](#roadmap-rebuilding-the-baker)
 *   [Architectural Principles](#architectural-principles)
 *   [Contributing](#contributing)
 *   [Dependencies](#dependencies)
@@ -34,7 +30,7 @@ The core philosophy is to create a data-first engine that produces emergent, bel
 
 ## Core Philosophy
 
-The project's design is built on four pillars, enforced by a strict set of internal development rules.
+The project's design is built on three core pillars, enforced by a strict set of internal development rules.
 
 ### 1. True Modularity (Plug-and-Play)
 
@@ -46,19 +42,16 @@ The goal is to generate worlds with believable and emergent characteristics, not
 
 ### 3. Rapid, Interactive Design
 
-The project is more than just a generator; it's a design tool. The **Live Editor** provides a real-time, full-world preview that updates instantly as you adjust parameters, allowing for fast iteration and artistic direction. A new **real-time data tooltip** provides direct quantitative feedback on the climate at any point on the map, turning abstract parameters into tangible results. This workflow empowers designers to craft a specific world rather than just accepting a random seed.
-
-### 4. Efficiency and Performance
-
-Performance is a key design consideration, driven by profiling (Rule 11). The editor uses a single, low-resolution preview for interactivity, while the final output is a "baked" set of image tiles. This two-tier system enables a potential viewer to run with maximum performance by offloading all generation to a one-time, offline process. The baker itself is highly parallelized to utilize all available CPU cores, and critical code paths in the noise generation algorithms are JIT-compiled with Numba for C-like speed.
+The project is more than just a generator; it's a design tool. The **Live Editor** provides a real-time, full-world preview that updates instantly as you adjust parameters, allowing for fast iteration and artistic direction. A **real-time data tooltip** provides direct quantitative feedback on the climate at any point on the map, turning abstract parameters into tangible results. This workflow empowers designers to craft a specific world rather than just accepting a random seed.
 
 ## Project Structure
 
+The project is now streamlined to focus on the core generator and the live editor application.
+
 ```
 Realistic-Modular-Pygame-World-Generator/
-├── editor/                         # The interactive world design tool and baker.
+├── editor/                         # The interactive world design tool.
 │   ├── main.py                     # Application entry point and main loop.
-│   ├── baker.py                    # Integrated, multi-threaded world baking module.
 │   ├── renderer.py                 # Pygame-specific rendering logic.
 │   ├── camera.py                   # Handles view transformations (pan/zoom).
 │   ├── config.json                 # Default simulation parameters for the editor.
@@ -74,25 +67,15 @@ Realistic-Modular-Pygame-World-Generator/
     └── color_maps.py               # Shared color mapping utilities.
 ```
 
-## System Architecture: The Two-Tier Workflow
+## System Architecture: The Live Editor
 
-The project operates using a powerful two-tier workflow that separates the creative design process from the final, high-performance output.
-
-### Tier 1: The Live Editor
+The project now operates as a single-tier application focused on providing a high-quality, interactive design experience.
 
 When you run `editor.main`, you enter the Live Editor. Its purpose is rapid design and iteration.
 *   **Single Preview Surface:** Instead of rendering thousands of chunks, the editor generates one single, moderately-sized image of the entire world.
 *   **Real-Time Feedback:** This preview image is regenerated whenever you change a parameter using the UI sliders, providing instant visual feedback.
 *   **Pixelated Zoom:** Zooming is fast but pixelated, as it simply scales the single preview image. This is by design to maintain interactivity.
 *   **Non-Destructive:** All changes are made in memory. The original `config.json` is never modified.
-
-### Tier 2: The Integrated Baker
-
-When you are satisfied with your world design in the editor, you can use the "Bake World" feature.
-*   **Seamless & Multi-Threaded:** Clicking the "Bake World" button launches the baking process in a background thread within the editor itself. The main UI remains fully responsive, allowing you to continue interacting with the application while the bake is in progress.
-*   **Rich UI Feedback:** The baking process provides real-time feedback directly in the UI, with a live progress bar and status messages, so you always know its state.
-*   **Formalized Output Package:** The baker produces a self-contained "Baked World Package" in the `baked_worlds/` directory. Each package is a folder containing the full-resolution chunk images, a `manifest.json` file to map coordinates to images, and a `world_config.json` file that saves the exact parameters used for the bake, ensuring perfect reproducibility.
-*   **Highly Optimized:** The baker utilizes all available CPU cores for maximum speed and generates highly optimized output using a tiered, lossless compression strategy (including content deduplication and PNG palettization) to minimize storage size.
 
 ### The Generation Pipeline: From Seed to Climate
 
@@ -129,27 +112,7 @@ Configuration is split into two distinct types, following Rule 1.
 
 ## Performance & Optimization
 
-*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `main.py`. The on-the-fly climate and soil calculations are performed on this preview-sized array, maintaining interactivity.
-*   **Baking:** The baking process is a highly optimized, CPU-bound task that is parallelized across all available cores. Its duration is primarily determined by the total number of chunks and the raw processing power of the host machine.
-
-### The Optimization Journey & Architectural Lessons
-
-The current high performance of the baker is the result of a rigorous optimization process that involved overcoming several critical bottlenecks. This journey provides valuable lessons for future development.
-
-**Successful Optimizations Implemented:**
-1.  **Parallelization:** The core task was parallelized using Python's `multiprocessing` module, distributing the work of processing individual chunks across all available CPU cores.
-2.  **Advanced Compression:** A tiered, lossless compression strategy was implemented using the Pillow library. This includes content deduplication via hashing, 1x1 pixel compression for uniform chunks, and 8-bit PNG palettization for low-color chunks, dramatically reducing storage size.
-3.  **Data Quantization:** The smooth gradients of temperature and humidity data were quantized into discrete steps (e.g., one step per degree Celsius). This massively increased the effectiveness of content deduplication with minimal impact on visual quality.
-4.  **On-the-Fly Correctness:** The architecture was refactored to calculate climate and soil data in real-time. This fixed critical architectural flaws where climate was not responding to terrain changes, trading a negligible performance cost for a massive gain in correctness.
-5.  **Low-Level CPU Speedup:** Numba's `fastmath=True` flag was applied to the core Perlin noise functions, allowing the JIT compiler to use faster, less-precise floating-point instructions, which provided a significant speed boost with no perceptible change in the visual output.
-
-**The Failed Approach: Block-Based Processing**
-
-An attempt was made to further optimize the CPU-bound work by having each worker process a large block of chunks (e.g., 4x4 or 8x8) at once.
-
-*   **The Theory:** The hypothesis was that calculating noise for one large, contiguous array would be more efficient for the CPU cache and Numba's compiler than performing many smaller, separate calculations.
-*   **The Failure in Practice:** This approach led to a catastrophic performance collapse. Each of the many worker processes attempted to allocate several massive NumPy arrays simultaneously, creating a sudden and enormous demand for RAM. This **memory saturation** forced the operating system to start "thrashing"—aggressively swapping memory to the much slower hard drive. The result was a system that was almost completely unresponsive, with CPUs spending all their time waiting for the disk.
-*   **The Architectural Lesson:** For this type of "embarrassingly parallel" task, **maintaining a low memory footprint for each individual worker is far more critical to overall performance than micro-optimizing CPU cache efficiency.** The cost of memory swapping is orders of magnitude greater than any potential gains from larger batch processing. The current, stable architecture where each worker handles one memory-light chunk at a time is the correct and most scalable approach. **This path should not be pursued again.**
+*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `main.py`. The on-the-fly climate and soil calculations are performed on this preview-sized array, maintaining interactivity. Critical code paths in the noise generation algorithms are JIT-compiled with Numba for C-like speed.
 
 ## Getting Started
 
@@ -164,8 +127,7 @@ An attempt was made to further optimize the CPU-bound work by having each worker
     ```sh
     git clone https://github.com/your-username/Realistic-Modular-Pygame-World-Generator.git
     cd Realistic-Modular-Pygame-World-Generator
-    ```
-2.  **Create and activate a virtual environment (recommended):**
+    ```2.  **Create and activate a virtual environment (recommended):**
     ```sh
     python -m venv venv
     # On Windows: venv\Scripts\activate
@@ -185,8 +147,7 @@ An attempt was made to further optimize the CPU-bound work by having each worker
 
 *   **Live Parameter Tuning:** Use the sliders on the right-hand panel to adjust world parameters. The preview will update automatically.
 *   **Custom World Size:** Enter new dimensions (in chunks) into the text boxes and click **"Apply Size Changes"** to re-initialize the world.
-*   **Real-Time Data:** Hover the mouse over the map to see a **real-time data tooltip** showing the terrain type, temperature, and humidity at that exact point.
-*   **Baking Your World:** When you are satisfied with the design, click **"Bake World"**. This will start the fast, offline rendering process in a background thread. The editor will remain responsive, and you can monitor progress via the live progress bar in the UI.
+*   **Real-Time Data:** Hover the mouse over the map to see a **real-time data tooltip** showing the temperature and humidity at that exact point.
 *   **Standard Controls:**
     *   **Pan:** `W`, `A`, `S`, `D` keys
     *   **Zoom:** Mouse Wheel Up/Down
@@ -239,36 +200,27 @@ logger = logging.getLogger("my_data_app")
 world_gen = WorldGenerator(config={"seed": 42}, logger=logger)
 
 # --- 2. Define the Region of Interest ---
-# We want a 200x200 pixel area, starting at world coordinate (500000, 500000) cm.
 RESOLUTION = 200
 X_START_CM = 500000
 Y_START_CM = 500000
-
-# Create coordinate grids for the generator. The generator works with NumPy arrays.
-x_coords = np.linspace(X_START_CM, X_START_CM + 20000, RESOLUTION) # 200m wide region
-y_coords = np.linspace(Y_START_CM, Y_START_CM + 20000, RESOLUTION) # 200m high region
+x_coords = np.linspace(X_START_CM, X_START_CM + 20000, RESOLUTION)
+y_coords = np.linspace(Y_START_CM, Y_START_CM + 20000, RESOLUTION)
 wx_grid, wy_grid = np.meshgrid(x_coords, y_coords)
 
 # --- 3. Generate All Data Layers ---
 print("Generating data for region...")
-# Follow the same pipeline as the editor for correctness
 bedrock_data = world_gen._get_bedrock_elevation(wx_grid, wy_grid)
-slope_data = world_gen._get_slope(bedrock_data)
-soil_depth_data = world_gen._get_soil_depth(slope_data)
-elevation_data = world_gen.get_elevation(wx_grid, wy_grid)
+elevation_data = world_gen.get_elevation(wx_grid, wy_grid, bedrock_elevation=bedrock_data)
 temp_data = world_gen.get_temperature(wx_grid, wy_grid, elevation_data)
+soil_depth_data = world_gen._get_soil_depth(world_gen._get_slope(bedrock_data))
 humidity_data = world_gen.get_humidity(wx_grid, wy_grid, elevation_data, temp_data)
 print("Data generation complete.")
 
 # --- 4. Convert Raw Data to a Color Image ---
 print("Creating terrain color map...")
-# Use the same color utility as the editor and baker for consistency
-color_array = color_maps.get_terrain_color_array(
-    elevation_data, temp_data, humidity_data, soil_depth_data
-)
-
-# The color_maps utility returns (width, height, channels),
-# but Pillow needs (height, width, channels). So we transpose.
+biome_map = color_maps.calculate_biome_map(elevation_data, temp_data, humidity_data, soil_depth_data)
+biome_lut = color_maps.create_biome_color_lut()
+color_array = color_maps.get_terrain_color_array(biome_map, biome_lut)
 img_data = np.transpose(color_array, (1, 0, 2))
 
 # --- 5. Save the Image ---
@@ -277,36 +229,34 @@ img.save("output_terrain_map.png")
 print("Saved terrain map to output_terrain_map.png")
 ```
 
-## Roadmap & Future Features
+## Roadmap: Rebuilding the Baker
 
-The following features are planned to enhance the project's usability, realism, and creative potential. They are designed to build upon the existing modular architecture.
+The previous baking and world viewing systems were removed to resolve critical fidelity bugs. The project now rests on the stable and proven foundation of the Live Editor. This roadmap outlines the plan to incrementally rebuild the high-performance baking and viewing functionality from scratch, ensuring correctness at every step.
 
-### Main Menu & Interactive Baked World Viewer
+### 1. Re-implement a Simple, Single-Threaded Baker
 
-A top-priority feature to elevate the project from a tool to a complete application. This involves creating a unified starting point and a high-performance viewer for finished worlds.
+The first priority is to create a new, simple `baker.py` module.
+*   **Core Logic:** It will contain a single function that iterates through every chunk coordinate `(cx, cy)` in a simple `for` loop.
+*   **Fidelity First:** For each chunk, it will use the now-proven "generate padded, then crop" methodology to ensure 100% fidelity with the live editor.
+*   **Output:** It will produce the same self-contained "Baked World Package" as before, with optimized PNGs and a single `manifest.json`.
+*   **Goal:** To have a slow, but **100% correct**, baseline implementation.
 
-*   **User Experience:** Upon launch, users will be greeted with a simple main menu offering two choices: "Create New World" (which launches the current Live Editor) and "View Baked Worlds".
-*   **Baked World Browser:** The "View Baked Worlds" option will open a new screen that scans the `baked_worlds/` directory and presents a list of all completed worlds, perhaps with a small preview image and key parameters from its `world_config.json`.
-*   **High-Performance Viewer:** Selecting a world will open it in a new, highly optimized viewing mode. This viewer will not generate any data. Instead, it will load the pre-rendered chunk images on-demand as the user pans and zooms. This will allow for a perfectly smooth, high-resolution experience even on massive worlds, fulfilling the primary purpose of the baking process. The viewer will be fully interactive, allowing the user to pan, zoom, and switch between all the baked data views (terrain, temperature, etc.) using the new UI.
+### 2. Re-implement the Baked World Viewer
 
-### User-Driven Baking & UI Enhancements
+With a correctly baked world package, a new viewer can be built.
+*   **New `viewer.py` and `browser.py`:** These modules will be recreated to scan the `baked_worlds` directory and load the manifest and chunk images on demand.
+*   **High-Performance:** The viewer will not perform any generation. Its only job is to efficiently load and display the pre-rendered images, allowing for smooth panning and zooming on massive worlds.
+*   **Integration:** A `MainMenuState` will be re-introduced to `main.py` to allow the user to choose between the Live Editor and the new Baked World Browser.
 
-These features focus on giving the user more direct control over the application's core functions and improving the clarity of the interface.
+### 3. Parallelize the Baker
 
-*   **Selective Map View Baking:** To save time and significant disk space, users will be able to choose exactly which data layers get baked.
-    *   **Implementation:** A series of checkboxes ("Terrain", "Temperature", "Humidity", etc.) will be added to the editor's UI panel. Before starting a bake, the application will pass the list of selected views to the baker thread. The baker will then only generate, save, and create manifests for the requested views. The "Estimated Bake Size" calculation will be updated to dynamically reflect the number of selected views for an accurate prediction.
+Once the simple baker is proven correct, performance can be addressed.
+*   **Multiprocessing:** The simple, looping logic in `baker.py` will be parallelized using Python's `multiprocessing` module.
+*   **UI Integration:** The baker will be designed to run in a background thread, providing progress updates to the UI via a queue, just as before.
 
-*   **Enhanced View Mode UI:** The current method of pressing the 'V' key to cycle through views will be replaced with a more intuitive and informative interface.
-    *   **Implementation:** A large, clear `UILabel` will be added to the top-center of the screen, displaying the name of the current view mode (e.g., "Temperature View"). Additionally, a new `UIPanel` will be added to the bottom-right corner containing a dedicated `UIButton` for each available view mode, allowing users to switch directly to any view at any time.
+### 4. Add Advanced Features
 
-### New Simulation & Generation Features
-
-These features will deepen the simulation's realism and provide greater artistic control over the final world.
-
-*   **New Simulation Layer: Air Pressure:** To enhance the scientific grounding of the climate model, a new air pressure layer will be added.
-    *   **Implementation:** Following **Rule 8 (Scientifically-Grounded Abstraction)**, a new method `get_air_pressure(elevation_data)` will be added to the `WorldGenerator`. This will use a simplified version of the real-world barometric formula to calculate air pressure (in kPa or a similar unit) based on altitude. This new data layer will be available as a new view mode and can be used in the future to drive more complex wind and weather simulations.
-
-*   **Hydraulic Erosion & River Networks:** An algorithm to simulate water flow, carving rivers from mountains to the sea and creating more realistic drainage basins and deltas.
+With the core baking/viewing loop restored and correct, new features can be added on top of this stable base, such as selective map baking and UI enhancements.
 
 ## Architectural Principles
 
@@ -329,8 +279,7 @@ Contributions are welcome. Please adhere to the established architectural princi
 *   `numpy`: The core dependency for all numerical operations.
 *   `numba`: Used to JIT-compile the performance-critical Perlin noise function.
 *   `scipy`: Used for tectonic plate generation (`cKDTree`) and other scientific computations.
-*   `Pillow`: Used for robust, high-performance image saving in the parallel baker and for data visualization examples.
-*   `tqdm`: Used to display a progress bar for the integrated baker.
+*   `Pillow`: Used for data visualization examples.
 
 ## License
 
