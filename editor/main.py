@@ -19,7 +19,7 @@ from world_generator import color_maps
 # --- UI Constants (Rule 1) ---
 UI_PANEL_WIDTH = 320
 UI_ELEMENT_HEIGHT = 25
-UI_SLIDER_HEIGHT = 50
+UI_SLIDER_HEIGHT = 25
 UI_PADDING = 10
 UI_BUTTON_HEIGHT = 40
 
@@ -44,6 +44,7 @@ class EditorState:
 
     def __init__(self, app):
         # --- Core Application References ---
+        self.go_to_menu = False
         self.app = app
         self.logger = app.logger
         self.config = app.config
@@ -514,6 +515,15 @@ class EditorState:
             visible=False
         )
 
+    # --- Add a "Return to Main Menu" button at the very bottom ---
+        # Position it just above the bottom of the panel
+        self.main_menu_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(UI_PADDING, self.app.screen_height - UI_BUTTON_HEIGHT - UI_PADDING, element_width, UI_BUTTON_HEIGHT),
+            text="Return to Main Menu",
+            manager=self.ui_manager,
+            container=self.ui_panel
+        )
+
     def handle_events(self, events):
         """Processes user input and other events for this state."""
         for event in events:
@@ -553,6 +563,10 @@ class EditorState:
                     self._apply_world_size_changes()
                 elif event.ui_element == self.calculate_size_button:
                     self._calculate_and_display_bake_size()
+                elif event.ui_element == self.main_menu_button:
+                    self.logger.info("Event: 'Return to Main Menu' button pressed.")
+                    # We'll use a simple flag to signal the state change in the update method
+                    self.go_to_menu = True
                 else:
                     self._handle_plate_button_press(event.ui_element)
             
@@ -592,6 +606,8 @@ class EditorState:
 
     def update(self, time_delta):
         """Update state logic. Returns a signal for the state machine."""
+        if not hasattr(self, 'go_to_menu'): self.go_to_menu = False
+        
         self._update()
         self.ui_manager.update(time_delta)
 
@@ -600,8 +616,12 @@ class EditorState:
             self.logger.info(f"Performance test complete after {self.frame_count} frames.")
             self.is_running = False
         
+        if self.go_to_menu:
+            self.go_to_menu = False # Reset flag
+            return ("GOTO_STATE", "main_menu")
+
         if not self.is_running:
-            return "QUIT" # Signal to the main app to exit
+            return ("QUIT", None)
         return None
 
     def draw(self, screen):
@@ -1161,6 +1181,70 @@ class EditorState:
         if new_plates != current_plates:
             self._update_world_parameter('num_tectonic_plates', new_plates)
 
+class MainMenuState:
+    """The main menu state, acting as the application's central hub."""
+
+    def __init__(self, app):
+        self.app = app
+        self.logger = app.logger
+        self.screen = app.screen
+        self.ui_manager = pygame_gui.UIManager((app.screen_width, app.screen_height))
+        
+        self.next_state = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Creates the UI for the main menu."""
+        # Center the buttons vertically
+        button_width = 300
+        button_height = 50
+        button_y_start = (self.app.screen_height - (2 * button_height + UI_PADDING)) // 2
+        button_x = (self.app.screen_width - button_width) // 2
+
+        self.editor_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(button_x, button_y_start, button_width, button_height),
+            text="Live World Editor",
+            manager=self.ui_manager
+        )
+
+        self.browser_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(button_x, button_y_start + button_height + UI_PADDING, button_width, button_height),
+            text="Browse Baked Worlds",
+            manager=self.ui_manager
+        )
+        # The browser button is disabled for now, as the feature is not implemented yet.
+        self.browser_button.disable()
+
+    def handle_events(self, events):
+        """Processes user input for the main menu."""
+        for event in events:
+            self.ui_manager.process_events(event)
+
+            if event.type == pygame.QUIT:
+                self.next_state = ("QUIT", None)
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.next_state = ("QUIT", None)
+            elif event.type == pygame_gui.UI_BUTTON_PRESSED:
+                if event.ui_element == self.editor_button:
+                    self.logger.info("Event: 'Live World Editor' button pressed.")
+                    self.next_state = ("GOTO_STATE", "editor")
+
+    def update(self, time_delta):
+        """Update state logic. Returns a signal for the state machine."""
+        self.ui_manager.update(time_delta)
+        
+        if self.next_state:
+            signal = self.next_state
+            self.next_state = None  # Reset signal
+            return signal
+        return None
+
+    def draw(self, screen):
+        """Renders the main menu."""
+        screen.fill((20, 20, 40)) # A different background color for the menu
+        self.ui_manager.draw_ui(screen)
+
+
 class Application:
     """The main application class, responsible for managing states and the main loop."""
 
@@ -1169,8 +1253,6 @@ class Application:
         self.logger.info("Application starting.")
         self.config = self._load_config()
 
-        # --- Lazy Imports (Rule 7 / Performance) ---
-        # The BakedWorldRenderer is no longer needed.
         global pygame, pygame_gui, WorldRenderer, Camera
         import pygame
         import pygame_gui
@@ -1180,10 +1262,14 @@ class Application:
         self._setup_pygame()
 
         # --- State Machine ---
-        # Start directly in the EditorState, bypassing the main menu.
-        self.active_state = EditorState(self)
+        self.states = {
+            "main_menu": MainMenuState(self),
+            "editor": EditorState(self)
+            # Future states like "browser" and "viewer" will be added here
+        }
+        self.active_state_name = "main_menu"
+        self.active_state = self.states[self.active_state_name]
         self.is_running = True
-        self.selected_world_path = None
 
     def _setup_logging(self):
         """Initializes the logging system from a config file."""
@@ -1241,29 +1327,28 @@ class Application:
             while self.is_running:
                 time_delta = self.clock.tick(self.tick_rate) / 1000.0
                 
-                # 1. Handle Events
                 events = pygame.event.get()
                 self.active_state.handle_events(events)
 
-                # 2. Update State
                 signal = self.active_state.update(time_delta)
                 
-                # 3. Handle State Transitions
-                if signal: # If a signal was returned
-                    if signal == "QUIT":
+                # --- Handle State Transitions ---
+                if signal:
+                    signal_type, data = signal
+                    if signal_type == "QUIT":
                         self.is_running = False
+                    elif signal_type == "GOTO_STATE":
+                        self.logger.info(f"Transitioning from state '{self.active_state_name}' to '{data}'...")
+                        self.active_state_name = data
+                        self.active_state = self.states[self.active_state_name]
 
-                # 4. Draw
                 self.active_state.draw(self.screen)
-
-                # 4. Flip Display
                 pygame.display.flip()
                 
         except Exception as e:
             self.logger.critical("An unhandled exception occurred in the main loop!", exc_info=True)
         finally:
             self.logger.info("Exiting application.")
-            # The active state may have a profiler that needs reporting
             if hasattr(self.active_state, 'profiler') and self.active_state.profiler:
                 self.active_state._report_profiling_results()
             pygame.quit()
