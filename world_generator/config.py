@@ -169,17 +169,17 @@ MAX_SOIL_DEPTH_UNITS = 0.05
 # The feature scale for the noise that creates the mountain ranges themselves.
 MOUNTAIN_UPLIFT_FEATURE_SCALE_KM = 15.0
 # The radius, in km, around a plate boundary where mountains will form.
-MOUNTAIN_INFLUENCE_RADIUS_KM = 5.0
+MOUNTAIN_INFLUENCE_RADIUS_KM = 0.05
 # A multiplier for how high mountains get at the peak of a plate boundary.
 # This now controls the blending of the dedicated uplift noise layer.
-MOUNTAIN_UPLIFT_STRENGTH = 0.8
+MOUNTAIN_UPLIFT_STRENGTH = 2.5
 
 # --- Rendering & Performance ---
 CHUNK_RESOLUTION = 100  # The number of pixels on one side of a chunk texture
 PLACEHOLDER_RESOLUTION = 8 # Lower-res version for instant previews (Rule 8)
 CHUNK_SIZE_CM = 10000   # 100m = 10,000 cm. This is the core unit.
-DEFAULT_WORLD_WIDTH_CHUNKS = 800
-DEFAULT_WORLD_HEIGHT_CHUNKS = 450
+DEFAULT_WORLD_WIDTH_CHUNKS = 10
+DEFAULT_WORLD_HEIGHT_CHUNKS = 10
 
 # --- World Edge Control (Rule 8) ---
 # The generation mode for the world's edges.

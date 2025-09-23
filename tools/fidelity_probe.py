@@ -1,6 +1,4 @@
-# FOLDER: /
-
-# fidelity_probe.py
+# tools/fidelity_probe.py
 
 import json
 import logging
@@ -71,7 +69,7 @@ def run_full_probe():
     logger = logging.getLogger("FidelityProbe")
 
     # --- 1. Load Baked World Manifest ---
-    bake_dir = "BakedWorldPackage_Optimized"
+    bake_dir = "BakedWorldPackage_Live"
     manifest_path = os.path.join(bake_dir, "manifest.json")
     logger.info(f"Loading manifest from '{manifest_path}'...")
     try:

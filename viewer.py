@@ -1,5 +1,3 @@
-# FOLDER: /
-
 # viewer.py
 
 import pygame

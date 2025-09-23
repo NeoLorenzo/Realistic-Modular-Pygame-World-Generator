@@ -7,10 +7,15 @@ import logging
 import logging.config
 import time
 import cProfile
+import multiprocessing
+from baker_worker import run_chunk_baking_job
 import pstats
 import io
 from datetime import datetime
 import numpy as np
+import hashlib
+from PIL import Image
+import pygame
 
 from world_generator.generator import WorldGenerator
 # Import the color_maps module to access its functions.
@@ -156,6 +161,15 @@ class EditorState:
         # --- Live Editor Benchmark State ---
         self.live_editor_benchmark_config = self.config.get('live_editor_benchmark', {})
         self.is_live_editor_benchmark_running = self.live_editor_benchmark_config.get('enabled', False)
+
+        # --- Visual Baker State ---
+        self.is_baking = False
+        self.baking_setup_done = False
+        self.baking_pool = None
+        self.baking_pending_results = []
+        self.baking_background_surface = None
+        self.baking_background_pos = (0, 0)
+        self.baking_overlay_surface = None
 
         self._perf_test_path = []
         self._perf_test_current_action = None
@@ -347,7 +361,7 @@ class EditorState:
         # --- Slider 9: Tectonic Width ---
         pygame_gui.elements.UILabel(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
-            text="Tectonic Width (km)",
+            text="Tectonic Width (% of World)",
             manager=self.ui_manager,
             container=self.ui_panel
         )
@@ -355,8 +369,8 @@ class EditorState:
 
         self.mountain_width_slider = pygame_gui.elements.UIHorizontalSlider(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_SLIDER_HEIGHT),
-            start_value=world_settings.get('mountain_influence_radius_km', 5.0),
-            value_range=(5.0, 250.0),
+            start_value=world_settings.get('mountain_influence_radius_km', 0.05),
+            value_range=(0.01, 1.0),
             manager=self.ui_manager,
             container=self.ui_panel
         )
@@ -495,12 +509,10 @@ class EditorState:
 
         self.bake_button = pygame_gui.elements.UIButton(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_BUTTON_HEIGHT),
-            text="Bake World (Disabled)",
+            text="Bake World",
             manager=self.ui_manager,
             container=self.ui_panel
         )
-        # The bake button is now just a placeholder and will do nothing.
-        self.bake_button.disable()
         current_y += UI_BUTTON_HEIGHT + UI_PADDING
 
         # --- Tooltip Initialization ---
@@ -526,6 +538,17 @@ class EditorState:
 
     def handle_events(self, events):
         """Processes user input and other events for this state."""
+        # --- Block all input if in baking mode, except for the ESC key ---
+        if self.is_baking:
+            for event in events:
+                if event.type == pygame.QUIT:
+                    self.is_running = False
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    self.logger.info("Bake cancelled by user.")
+                    self.is_baking = False
+                    self.ui_panel.show() # Re-show the UI
+            return # Ignore all other event processing
+
         for event in events:
             # Pass events to the UI Manager first
             self.ui_manager.process_events(event)
@@ -563,9 +586,74 @@ class EditorState:
                     self._apply_world_size_changes()
                 elif event.ui_element == self.calculate_size_button:
                     self._calculate_and_display_bake_size()
+                elif event.ui_element == self.bake_button:
+                    if self.is_baking:
+                        self.logger.warning("A bake is already in progress.")
+                        return
+                    self.logger.info("Event: 'Bake World' button pressed. Initializing bake.")
+                    self.is_baking = True
+                    self.baking_setup_done = False
+
+                    # --- Initialize all state for the new bake ---
+                    width = self.world_generator.settings['world_width_chunks']
+                    height = self.world_generator.settings['world_height_chunks']
+                    
+                    # Create a queue of all chunk coordinates to be processed
+                    self.baking_queue = [(cx, cy) for cy in range(height) for cx in range(width)]
+                    self.completed_chunks = set()
+                    self.seen_hashes = set()
+                    
+                    # --- Initialize all state for the new multi-view bake ---
+                    self.view_modes_to_bake = list(self.view_modes)
+                    self.current_baking_view_index = 0
+                    
+                    width = self.world_generator.settings['world_width_chunks']
+                    height = self.world_generator.settings['world_height_chunks']
+                    
+                    self.completed_chunks = set()
+                    self.seen_hashes = set()
+                    
+                    self.baking_manifest = {
+                        "world_name": f"MyWorld_Seed{self.world_generator.settings['seed']}",
+                        "world_dimensions_chunks": [width, height],
+                        "chunk_resolution_pixels": self.world_generator.settings.get('chunk_resolution', 100),
+                        "chunk_map": {}
+                    }
+                    
+                    # --- CRITICAL FIX: Initialize the output directory path HERE ---
+                    self.bake_output_dir = "BakedWorldPackage_Live"
+                    os.makedirs(os.path.join(self.bake_output_dir, "chunks"), exist_ok=True)
+
+                    # --- Start the multiprocessing pool ---
+                    cpu_count = max(1, multiprocessing.cpu_count() - 1)
+                    self.logger.info(f"Starting multiprocessing pool with {cpu_count} workers.")
+                    self.baking_pool = multiprocessing.Pool(processes=cpu_count)
+                    
+                    # --- Submit the first batch of jobs ---
+                    self._start_baking_next_view()
+                    self.completed_chunks = set()
+                    self.seen_hashes = set()
+                    
+                    # Prepare the in-memory manifest for multiple views
+                    self.baking_manifest = {
+                        "world_name": f"MyWorld_Seed{self.world_generator.settings['seed']}",
+                        "world_dimensions_chunks": [width, height],
+                        "chunk_resolution_pixels": self.world_generator.settings.get('chunk_resolution', 100),
+                        "chunk_map": {} # Will be populated with view modes as we go
+                    }
+                    
+                    # --- CRITICAL FIX: Initialize the output directory path ---
+                    self.bake_output_dir = "BakedWorldPackage_Live"
+                    os.makedirs(os.path.join(self.bake_output_dir, "chunks"), exist_ok=True)
+                    # Initialize the map for the first view
+                    first_view = self.view_modes_to_bake[self.current_baking_view_index]
+                    self.baking_manifest["chunk_map"][first_view] = {}
+                    
+                    # Prepare the output directory
+                    self.bake_output_dir = "BakedWorldPackage_Live"
+                    os.makedirs(os.path.join(self.bake_output_dir, "chunks"), exist_ok=True)
                 elif event.ui_element == self.main_menu_button:
                     self.logger.info("Event: 'Return to Main Menu' button pressed.")
-                    # We'll use a simple flag to signal the state change in the update method
                     self.go_to_menu = True
                 else:
                     self._handle_plate_button_press(event.ui_element)
@@ -611,6 +699,100 @@ class EditorState:
         self._update()
         self.ui_manager.update(time_delta)
 
+        # --- Handle Visual Baker Mode ---
+        if self.is_baking:
+            # --- One-time setup for the entire bake process ---
+            if not self.baking_setup_done:
+                self.logger.info("Performing one-time setup for baking mode.")
+                self.ui_panel.hide()
+                drawable_width = self.app.screen_width
+                drawable_height = self.app.screen_height
+                zoom_x = drawable_width / self.world_generator.world_width_cm
+                zoom_y = drawable_height / self.world_generator.world_height_cm
+                self.camera.zoom = min(zoom_x, zoom_y)
+                self.camera.x = self.world_generator.world_width_cm / 2
+                self.camera.y = self.world_generator.world_height_cm / 2
+                
+                # --- Pre-render the background surface ONCE ---
+                self.logger.info("Pre-rendering static background for bake...")
+                scaled_width = max(1, int(self.camera.world_width * self.camera.zoom))
+                scaled_height = max(1, int(self.camera.world_height * self.camera.zoom))
+                self.baking_background_surface = pygame.transform.scale(self.live_preview_surface, (scaled_width, scaled_height))
+                self.baking_background_pos = self.camera.world_to_screen(0, 0)
+                self._create_baking_overlay_surface()
+                self.baking_setup_done = True
+
+            # --- Handle Visual Baker Mode ---
+        if self.is_baking:
+            # --- One-time setup ---
+            if not self.baking_setup_done:
+                # ... (setup logic is unchanged) ...
+                self.baking_setup_done = True
+
+            # --- Non-Blocking, Incremental Bake Progress Check ---
+            remaining_results = []
+            for result_obj in self.baking_pending_results:
+                if result_obj.ready():
+                    # This job is done, get its result and process it
+                    res_cx, res_cy, res_view, chunk_hash, needs_saving = result_obj.get()
+                    
+                    if needs_saving:
+                        self.seen_hashes.add(chunk_hash)
+                    
+                    self.baking_manifest["chunk_map"][res_view][f"{res_cx},{res_cy}"] = chunk_hash
+                    self.completed_chunks.add((res_cx, res_cy))
+
+                    # --- OPTIMIZED DRAWING ---
+                    # Draw one green square onto the overlay surface, only once.
+                    self._draw_completed_chunk_on_overlay(res_cx, res_cy)
+                else:
+                    # This job is not done yet, keep it for the next frame
+                    remaining_results.append(result_obj)
+            
+            self.baking_pending_results = remaining_results
+
+            # --- Check if the CURRENT VIEW is complete ---
+            if not self.baking_pending_results:
+                # Check if there are more views to bake
+                if self.current_baking_view_index < len(self.view_modes_to_bake) - 1:
+                    # If yes, transition to the next view
+                    self.current_baking_view_index += 1
+                    next_view = self.view_modes_to_bake[self.current_baking_view_index]
+                    
+                    self.completed_chunks.clear()
+                    self.baking_manifest["chunk_map"][next_view] = {}
+                    self.view_mode = next_view
+                    self.climate_maps_dirty = True
+                    
+                    # --- Regenerate and re-cache the background for the new view ---
+                    # This requires a single frame draw cycle to update the surface
+                    color_array = self._generate_preview_color_array()
+                    self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
+                    scaled_width = max(1, int(self.camera.world_width * self.camera.zoom))
+                    scaled_height = max(1, int(self.camera.world_height * self.camera.zoom))
+                    self.baking_background_surface = pygame.transform.scale(self.live_preview_surface, (scaled_width, scaled_height))
+                    self._create_baking_overlay_surface()
+                    self._start_baking_next_view()
+                else:
+                    # If no, this was the last view. Finalize the entire bake.
+                    self.logger.info("All view modes baked. Finalizing...")
+                    manifest_path = os.path.join(self.bake_output_dir, "manifest.json")
+                    with open(manifest_path, 'w') as f:
+                        json.dump(self.baking_manifest, f)
+                    
+                    gen_config_path = os.path.join(self.bake_output_dir, "generation_config.json")
+                    with open(gen_config_path, 'w') as f:
+                        json.dump(self.world_generator.settings, f, indent=4)
+                    
+                    self.logger.info(f"Bake complete! Output saved to '{self.bake_output_dir}'.")
+                    
+                    self.is_baking = False
+                    self.ui_panel.show()
+                    self.baking_pool.close()
+                    self.baking_pool.join()
+                    self.baking_pool = None
+                    self.baking_results = None
+
         # Performance test exit condition
         if self.is_perf_test_running and self.frame_count >= self.perf_test_config.get('duration_frames', 1000):
             self.logger.info(f"Performance test complete after {self.frame_count} frames.")
@@ -628,7 +810,7 @@ class EditorState:
         """Renders the scene for this state."""
         # --- Staged Preview Regeneration (Rule 5 & 11) ---
         is_dirty = self.tectonic_params_dirty or self.terrain_maps_dirty or self.climate_maps_dirty
-        if is_dirty:
+        if is_dirty and not self.is_baking: # Don't regenerate preview during a bake
             self.logger.info(f"Change detected. Regenerating preview data for view mode: '{self.view_mode}'...")
             color_array = self._generate_preview_color_array()
             self.live_preview_surface = self.world_renderer.create_surface_from_color_array(color_array)
@@ -638,8 +820,78 @@ class EditorState:
             self.climate_maps_dirty = False
             self.logger.info("Live preview regeneration complete.")
 
-        self.world_renderer.draw_live_preview(screen, self.camera, self.live_preview_surface)
+        # --- CRITICAL FIX: Only draw the expensive preview when NOT baking ---
+        if not self.is_baking:
+            self.world_renderer.draw_live_preview(screen, self.camera, self.live_preview_surface)
+        else:
+            # During a bake, blit the pre-scaled, cached background. This is very fast.
+            screen.fill((10, 0, 20)) # Fill borders first
+            if self.baking_background_surface:
+                screen.blit(self.baking_background_surface, self.baking_background_pos)
+
+        # --- Draw the baking overlay if baking is active ---
+        if self.is_baking and self.baking_overlay_surface:
+            screen.blit(self.baking_overlay_surface, (0, 0))
+
         self.ui_manager.draw_ui(screen)
+
+    def _create_baking_overlay_surface(self):
+        """Creates the initial transparent overlay with the grid."""
+        self.logger.info("Creating static grid overlay surface.")
+        # Create a surface the size of the screen that supports transparency
+        self.baking_overlay_surface = pygame.Surface(self.app.screen.get_size(), pygame.SRCALPHA)
+        
+        width_chunks = self.world_generator.settings['world_width_chunks']
+        height_chunks = self.world_generator.settings['world_height_chunks']
+        chunk_size_cm = self.world_generator.settings['chunk_size_cm']
+        grid_color = (255, 255, 255, 100) # White, semi-transparent
+
+        for cy in range(height_chunks):
+            for cx in range(width_chunks):
+                world_x_cm = cx * chunk_size_cm
+                world_y_cm = cy * chunk_size_cm
+                screen_x, screen_y = self.camera.world_to_screen(world_x_cm, world_y_cm)
+                scaled_chunk_size = chunk_size_cm * self.camera.zoom
+                chunk_rect = pygame.Rect(screen_x, screen_y, scaled_chunk_size, scaled_chunk_size)
+                pygame.draw.rect(self.baking_overlay_surface, grid_color, chunk_rect, 1)
+
+    def _draw_completed_chunk_on_overlay(self, cx, cy):
+        """Draws a single green square for a completed chunk onto the overlay."""
+        chunk_size_cm = self.world_generator.settings['chunk_size_cm']
+        world_x_cm = cx * chunk_size_cm
+        world_y_cm = cy * chunk_size_cm
+        screen_x, screen_y = self.camera.world_to_screen(world_x_cm, world_y_cm)
+        scaled_chunk_size = chunk_size_cm * self.camera.zoom
+        
+        fill_color = (0, 255, 0, 100)
+        s = pygame.Surface((scaled_chunk_size, scaled_chunk_size), pygame.SRCALPHA)
+        s.fill(fill_color)
+        # Blit this single square onto our persistent overlay surface
+        self.baking_overlay_surface.blit(s, (screen_x, screen_y))
+
+    def _start_baking_next_view(self):
+        """Prepares and submits all chunk baking jobs for the current view mode to the pool."""
+        current_view = self.view_modes_to_bake[self.current_baking_view_index]
+        self.logger.info(f"Submitting jobs for view mode: '{current_view}'")
+
+        # Initialize the manifest for the new view
+        self.baking_manifest["chunk_map"][current_view] = {}
+
+        width = self.world_generator.settings['world_width_chunks']
+        height = self.world_generator.settings['world_height_chunks']
+        
+        job_args_list = [{
+            'cx': cx, 'cy': cy,
+            'view_mode': current_view,
+            'world_gen_settings': self.world_generator.settings,
+            'output_dir': self.bake_output_dir,
+            'seen_hashes': self.seen_hashes
+        } for cy in range(height) for cx in range(width)]
+        
+        self.baking_pending_results = [
+            self.baking_pool.apply_async(run_chunk_baking_job, (args,))
+            for args in job_args_list
+        ]
 
     def _apply_world_size_changes(self):
         """
@@ -879,12 +1131,13 @@ class EditorState:
                 normalized_soil = np.zeros_like(self.cached_soil_depth_map)
             return color_maps.get_elevation_color_array(normalized_soil)
         else: # tectonic
-            strength = self.world_generator.settings['mountain_uplift_strength']
-            if strength > 0:
-                normalized_map = self.cached_tectonic_uplift_map / (2 * strength)
-            else:
-                normalized_map = np.zeros_like(self.cached_tectonic_uplift_map)
-            return color_maps.get_elevation_color_array(normalized_map)
+            # The maximum possible value for the uplift map is when influence is 1,
+            # noise is 1, and strength is at its max (5.0). So, 1 * (1+1) * 5.0 = 10.0.
+            # We normalize against this fixed theoretical maximum to ensure the
+            # visualization correctly reflects changes in strength.
+            THEORETICAL_MAX_UPLIFT = 10.0
+            normalized_map = self.cached_tectonic_uplift_map / THEORETICAL_MAX_UPLIFT
+            return color_maps.get_elevation_color_array(np.clip(normalized_map, 0.0, 1.0))
 
     def _update_tooltip(self):
         """
@@ -1349,11 +1602,21 @@ class Application:
             self.logger.critical("An unhandled exception occurred in the main loop!", exc_info=True)
         finally:
             self.logger.info("Exiting application.")
+            # --- Ensure the multiprocessing pool is always cleaned up ---
+            if hasattr(self.active_state, 'baking_pool') and self.active_state.baking_pool:
+                self.logger.info("Closing the multiprocessing pool...")
+                self.active_state.baking_pool.close()
+                self.active_state.baking_pool.join()
+
             if hasattr(self.active_state, 'profiler') and self.active_state.profiler:
                 self.active_state._report_profiling_results()
             pygame.quit()
             sys.exit()
 
 if __name__ == '__main__':
+    # CRITICAL FIX for Windows multiprocessing
+    # This must be the first call in the main entry point.
+    multiprocessing.freeze_support()
+    
     app = Application()
     app.run()
