@@ -8,18 +8,21 @@ import logging.config
 import time
 import cProfile
 import multiprocessing
-from baker_worker import run_chunk_baking_job
 import pstats
 import io
 from datetime import datetime
 import numpy as np
+from scipy.ndimage import zoom
 import hashlib
 from PIL import Image
 import pygame
+import math
 
 from world_generator.generator import WorldGenerator
 # Import the color_maps module to access its functions.
 from world_generator import color_maps
+
+from tools.baker import bake_master_data
 
 # --- UI Constants (Rule 1) ---
 UI_PANEL_WIDTH = 320
@@ -32,6 +35,12 @@ UI_BUTTON_HEIGHT = 40
 # The resolution of the single surface used for the live preview.
 PREVIEW_RESOLUTION_WIDTH = 1600
 PREVIEW_RESOLUTION_HEIGHT = 900
+
+# --- Viewer Application Constants (Rule 1) ---
+PAN_SPEED_PIXELS = 15
+ZOOM_SPEED = 0.1
+MAX_ZOOM = 2.0
+MIN_ZOOM = 0.01
 
 # --- Bake Estimation Constants (Rule 8) ---
 # An estimated average size for a 100x100 chunk PNG in KB.
@@ -49,7 +58,6 @@ class EditorState:
 
     def __init__(self, app):
         # --- Core Application References ---
-        self.go_to_menu = False
         self.app = app
         self.logger = app.logger
         self.config = app.config
@@ -59,53 +67,71 @@ class EditorState:
         
         self.logger.info("EditorState starting.")
 
-        # --- State ---
+        # --- 1. ESTABLISH THE SINGLE SOURCE OF TRUTH ---
+        self.master_data_path = "baked_worlds/MyWorld_Seed42" # Hardcoded for now
+        generation_config_path = os.path.join(self.master_data_path, "generation_config.json")
+        
+        world_gen_params = {}
+        if os.path.isfile(generation_config_path):
+            self.logger.info(f"Found generation config. Loading settings from '{generation_config_path}'.")
+            with open(generation_config_path, 'r') as f:
+                world_gen_params = json.load(f)
+        else:
+            self.logger.warning(f"No generation config found at '{generation_config_path}'. Falling back to default editor config.")
+            world_gen_params = self.config.get('world_generation_parameters', {})
+
+        # --- 2. INITIALIZE CORE COMPONENTS USING THE "TRUTH" ---
+        self.world_generator = WorldGenerator(config=world_gen_params, logger=self.logger)
+        self.camera = Camera(self.config, self.world_generator)
+        self.world_renderer = WorldRenderer(logger=self.logger)
+
+        # --- 3. INITIALIZE STATE VARIABLES ---
         self.view_modes = ["terrain", "temperature", "humidity", "elevation", "tectonic", "soil_depth"]
         self.current_view_mode_index = 0
         self.view_mode = self.view_modes[self.current_view_mode_index]
         self.frame_count = 0
+        self.live_preview_surface = None
+        self.terrain_maps_dirty = True # Start dirty to trigger initial preview generation
+        self.go_to_menu = False
 
-        # --- UI Setup ---
-        self.ui_manager = None # To be initialized in _setup_ui
+        # --- 4. LOAD MASTER DATA (if available) ---
+        self.master_data = {}
+        self._load_master_data() # This will populate self.master_data
+
+        # --- 5. SETUP UI AND OTHER COMPONENTS ---
+        self.ui_manager = None
         self.ui_panel = None
-        # Sliders
         self.temp_slider = None
         self.roughness_slider = None
         self.lapse_rate_slider = None
         self.continent_size_slider = None
         self.terrain_amplitude_slider = None
         self.polar_drop_slider = None
-        # World Size Inputs
+        self.mountain_smoothness_slider = None
+        self.mountain_width_slider = None
+        self.tectonic_strength_slider = None
         self.world_width_input = None
         self.world_height_input = None
         self.apply_size_button = None
-        self.km_size_label = None # New label for KM dimensions
-        # Bake Controls
+        self.km_size_label = None
         self.bake_button = None
         self.size_estimate_label = None
-        # Tooltip
+        self.calculate_size_button = None
         self.tooltip = None
         self.last_mouse_world_pos = (None, None)
-        # World Edge UI
         self.world_edge_dropdown = None
-        
-        # --- State for Live Preview Mode ---
-        # This MUST be initialized before _setup_ui() is called.
-        self.live_preview_surface = None
-        # This will hold the result of the bake size analysis.
-        self.estimated_uniform_ratio = 0.0
+        self.decrease_plates_button = None
+        self.plate_count_label = None
+        self.increase_plates_button = None
+        self.main_menu_button = None
 
-        # --- Hierarchical Caching (Rule 11) ---
-        # Dirty flags to control the regeneration pipeline
-        self.plate_layout_dirty = True # NEW: For expensive Voronoi calculation
+        # Hierarchical Caching (will be deprecated but needed for now)
+        self.plate_layout_dirty = True
         self.tectonic_params_dirty = True
-        self.terrain_maps_dirty = True
         self.climate_maps_dirty = True
-
-        # Cached data maps to avoid recalculation
-        self.cached_plate_ids = None # NEW
-        self.cached_dist1 = None # NEW
-        self.cached_dist2 = None # NEW
+        self.cached_plate_ids = None
+        self.cached_dist1 = None
+        self.cached_dist2 = None
         self.cached_tectonic_influence_map = None
         self.cached_tectonic_uplift_map = None
         self.cached_bedrock_map = None
@@ -116,53 +142,16 @@ class EditorState:
         self.cached_shadow_factor_map = None
         self.cached_climate_noise_map = None
         self.cached_biome_map = None
-
-        # This will hold the raw data arrays for the live preview, allowing the
-        # tooltip to sample from the exact same data the renderer uses.
-        self.live_preview_elevation_data = None # This will now be a pointer to the cache
+        self.live_preview_elevation_data = None
         self.live_preview_temp_data = None
         self.live_preview_humidity_data = None
-        # Pre-compute color LUTs once to avoid doing it every frame (Rule 11)
+
+        # Pre-compute color LUTs
         self.temp_lut = color_maps.create_temperature_lut()
         self.humidity_lut = color_maps.create_humidity_lut()
         self.biome_lut = color_maps.create_biome_color_lut()
 
-        # --- Dependency Injection (Rule 7, DIP) ---
-        # This block MUST be executed before _setup_ui() because the UI
-        # now depends on the world_generator for its initial values.
-        self.world_generator = WorldGenerator(
-            config=self.config.get('world_generation_parameters', {}),
-            logger=self.logger
-        )
-        self.camera = Camera(self.config, self.world_generator)
-        self.world_renderer = WorldRenderer(
-            logger=self.logger
-        )
-
-        self._setup_ui()
-        self._create_reverse_color_map()
-
-        # --- Profiling Setup (Rule 11) ---
-        self.profiler = None
-        if self.config.get('profiling', {}).get('enabled', False):
-            self.profiler = cProfile.Profile()
-            self.logger.info("Profiling is ENABLED.")
-        else:
-            self.logger.info("Profiling is DISABLED.")
-
-        # --- Performance Test State (Rule 11) ---
-        self.perf_test_config = self.config.get('performance_test', {})
-        self.is_perf_test_running = self.perf_test_config.get('enabled', False)
-        
-        # --- Benchmark Mode State ---
-        self.benchmark_config = self.config.get('benchmark', {})
-        self.is_benchmark_running = self.benchmark_config.get('enabled', False)
-
-        # --- Live Editor Benchmark State ---
-        self.live_editor_benchmark_config = self.config.get('live_editor_benchmark', {})
-        self.is_live_editor_benchmark_running = self.live_editor_benchmark_config.get('enabled', False)
-
-        # --- Visual Baker State ---
+        # Visual Baker State
         self.is_baking = False
         self.baking_setup_done = False
         self.baking_pool = None
@@ -171,12 +160,36 @@ class EditorState:
         self.baking_background_pos = (0, 0)
         self.baking_overlay_surface = None
 
+        # Actually create the UI
+        self._setup_ui()
+        self._create_reverse_color_map()
+
+        # Profiling Setup
+        self.profiler = None
+        if self.config.get('profiling', {}).get('enabled', False):
+            self.profiler = cProfile.Profile()
+            self.logger.info("Profiling is ENABLED.")
+        else:
+            self.logger.info("Profiling is DISABLED.")
+
+        # --- CORRECTED ORDER: DEFINE THESE BEFORE THEY ARE USED ---
+        # Performance Test State
+        self.perf_test_config = self.config.get('performance_test', {})
+        self.is_perf_test_running = self.perf_test_config.get('enabled', False)
+        
+        # Benchmark Mode State
+        self.benchmark_config = self.config.get('benchmark', {})
+        self.is_benchmark_running = self.benchmark_config.get('enabled', False)
+
+        # Live Editor Benchmark State
+        self.live_editor_benchmark_config = self.config.get('live_editor_benchmark', {})
+        self.is_live_editor_benchmark_running = self.live_editor_benchmark_config.get('enabled', False)
+        
         self._perf_test_path = []
         self._perf_test_current_action = None
         self._perf_test_action_frame_count = 0
         if self.is_perf_test_running:
             self.logger.info("Performance test mode is ENABLED. User input will be ignored.")
-            # Create a simple, expanded path for easier processing
             for step in self.perf_test_config.get('path', []):
                 for _ in range(step['frames']):
                     self._perf_test_path.append(step)
@@ -185,25 +198,9 @@ class EditorState:
 
         # --- Handle Special Run Modes ---
         if self.is_live_editor_benchmark_running:
-            if self.profiler:
-                self.logger.info("Disabling cProfile for benchmark to ensure accurate timing.")
-                self.profiler = None
-            self._run_live_editor_benchmark()
-            self.is_running = False # Signal immediate exit after benchmark
+            self.logger.warning("Live editor benchmark is not supported in the new architecture yet.")
         elif self.is_benchmark_running:
-            self.logger.info("Benchmark mode ENABLED. Application will exit after generation.")
-            if self.profiler: self.profiler.enable()
-            start_time = time.perf_counter()
-            # This is a placeholder for a future benchmark of the live preview generation
-            self.world_renderer.generate_live_preview_surface(
-                world_params=self.config['world_generation_parameters'],
-                view_mode=self.view_mode
-            )
-            end_time = time.perf_counter()
-            if self.profiler: self.profiler.disable()
-            duration = end_time - start_time
-            self.logger.info(f"Benchmark complete. Live preview generation took: {duration:.3f} seconds.")
-            self.is_running = False # Signal immediate exit after benchmark
+            self.logger.warning("Benchmark mode is not supported in the new architecture yet.")
         else:
             self.logger.info("Entering interactive editor mode.")
             if self.profiler:
@@ -412,7 +409,7 @@ class EditorState:
         )
         current_y += UI_BUTTON_HEIGHT + UI_PADDING
 
-                # --- Tectonic Plate Controls ---
+        # --- Tectonic Plate Controls ---
         pygame_gui.elements.UILabel(
             relative_rect=pygame.Rect(UI_PADDING, current_y, element_width, UI_ELEMENT_HEIGHT),
             text="Number of Tectonic Plates",
@@ -536,6 +533,44 @@ class EditorState:
             container=self.ui_panel
         )
 
+    def _rebake_master_data(self):
+        """
+        Triggers a blocking re-bake of the master data using the current
+        world_generator settings.
+        """
+        self.logger.info("Change detected. Re-baking master data...")
+        
+        # For now, we can't show a "Generating..." message easily because the
+        # bake is blocking, but we will see the log output.
+        
+        # Call the master baker function directly
+        bake_master_data(self.world_generator.settings, self.logger)
+        
+        # After the bake is complete, reload the data and trigger a redraw
+        self._load_master_data()
+        self.terrain_maps_dirty = True
+        self.logger.info("Master data re-baked and reloaded successfully.")
+
+    def _load_master_data(self):
+        """Loads all .npy files from the master_data directory."""
+        self.logger.info(f"Loading master data from '{self.master_data_path}'...")
+        data_dir = os.path.join(self.master_data_path, "master_data")
+        if not os.path.isdir(data_dir):
+            self.logger.error(f"Master data directory not found at '{data_dir}'. Cannot load.")
+            return
+
+        for filename in os.listdir(data_dir):
+            if filename.endswith(".npy"):
+                name = filename.split('.')[0]
+                try:
+                    self.master_data[name] = np.load(os.path.join(data_dir, filename))
+                    self.logger.info(f"  - Loaded {name}.npy (shape: {self.master_data[name].shape})")
+                except Exception as e:
+                    self.logger.error(f"Failed to load {filename}: {e}")
+        
+        # Trigger a redraw
+        self.terrain_maps_dirty = True # Re-using this flag is fine
+
     def handle_events(self, events):
         """Processes user input and other events for this state."""
         # --- Block all input if in baking mode, except for the ESC key ---
@@ -580,6 +615,8 @@ class EditorState:
                 param_name = param_map.get(event.ui_element)
                 if param_name:
                     self._update_world_parameter(param_name, event.value)
+                    # --- Trigger a full rebake on slider change ---
+                    self._rebake_master_data()
             
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
                 if event.ui_element == self.apply_size_button:
@@ -650,7 +687,7 @@ class EditorState:
                     self.baking_manifest["chunk_map"][first_view] = {}
                     
                     # Prepare the output directory
-                    self.bake_output_dir = "BakedWorldPackage_Live"
+                    self.bake_output_dir = "baked_worlds\BakedWorldPackage_Live"
                     os.makedirs(os.path.join(self.bake_output_dir, "chunks"), exist_ok=True)
                 elif event.ui_element == self.main_menu_button:
                     self.logger.info("Event: 'Return to Main Menu' button pressed.")
@@ -734,10 +771,15 @@ class EditorState:
             for result_obj in self.baking_pending_results:
                 if result_obj.ready():
                     # This job is done, get its result and process it
-                    res_cx, res_cy, res_view, chunk_hash, needs_saving = result_obj.get()
+                    res_cx, res_cy, res_view, chunk_hash, palettized_image = result_obj.get()
                     
-                    if needs_saving:
+                    # The main thread is now the sole authority on what has been saved
+                    if chunk_hash not in self.seen_hashes:
                         self.seen_hashes.add(chunk_hash)
+                        filename = f"{chunk_hash}.png"
+                        output_path = os.path.join(self.bake_output_dir, "chunks", filename)
+                        # This save operation is now very fast because the heavy lifting is done
+                        palettized_image.save(output_path, optimize=True)
                     
                     self.baking_manifest["chunk_map"][res_view][f"{res_cx},{res_cy}"] = chunk_hash
                     self.completed_chunks.add((res_cx, res_cy))
@@ -880,18 +922,15 @@ class EditorState:
         width = self.world_generator.settings['world_width_chunks']
         height = self.world_generator.settings['world_height_chunks']
         
+        # Get the one true permutation table from the editor's generator
+        p_table = self.world_generator.permutation_table
+
         job_args_list = [{
             'cx': cx, 'cy': cy,
             'view_mode': current_view,
             'world_gen_settings': self.world_generator.settings,
-            'output_dir': self.bake_output_dir,
-            'seen_hashes': self.seen_hashes
+            'permutation_table': p_table # Pass the "DNA" to the worker
         } for cy in range(height) for cx in range(width)]
-        
-        self.baking_pending_results = [
-            self.baking_pool.apply_async(run_chunk_baking_job, (args,))
-            for args in job_args_list
-        ]
 
     def _apply_world_size_changes(self):
         """
@@ -1008,135 +1047,52 @@ class EditorState:
 
     def _generate_preview_color_array(self) -> np.ndarray:
         """
-        Generates the raw data and color array for the current preview state.
-        This method implements a staged, cached pipeline to ensure only the
-        necessary calculations are performed.
+        Generates the preview by downsampling and colorizing the loaded Master Data.
         """
-        # Create a coordinate grid for the entire world at preview resolution.
-        # This is cheap and always needed.
-        wx = np.linspace(0, self.world_generator.world_width_cm, PREVIEW_RESOLUTION_WIDTH)
-        wy = np.linspace(0, self.world_generator.world_height_cm, PREVIEW_RESOLUTION_HEIGHT)
-        # The live preview pipeline requires the default 'xy' indexing for its
-        # non-square, frame-based calculations. This is DIFFERENT from the baker.
-        wx_grid, wy_grid = np.meshgrid(wx, wy)
+        if not self.master_data:
+            self.logger.warning("No master data loaded, cannot generate preview.")
+            return np.zeros((PREVIEW_RESOLUTION_WIDTH, PREVIEW_RESOLUTION_HEIGHT, 3), dtype=np.uint8)
 
-        # --- Stage 1: Tectonic Generation (Decoupled & Cached) ---
-        # Stage 1a: Recalculate the expensive Voronoi data ONLY if the plate layout has changed.
-        if self.plate_layout_dirty or self.cached_plate_ids is None:
-            self.logger.info("Plate layout changed. Recalculating Voronoi data...")
-            plate_ids, dist1, dist2 = self.world_generator.get_tectonic_data(
-                wx_grid, wy_grid,
-                self.world_generator.world_width_cm,
-                self.world_generator.world_height_cm,
-                self.world_generator.settings['num_tectonic_plates'],
-                self.world_generator.settings['seed']
-            )
-            self.cached_plate_ids = plate_ids
-            self.cached_dist1 = dist1
-            self.cached_dist2 = dist2
-            self.plate_layout_dirty = False # Reset the flag
-            self.logger.info("Voronoi data caching complete.")
+        # --- 1. Get master data arrays ---
+        elevation = self.master_data.get("elevation")
+        temperature = self.master_data.get("temperature")
+        humidity = self.master_data.get("humidity")
+        soil_depth = self.master_data.get("soil_depth")
+        uplift = self.master_data.get("uplift")
 
-        # Stage 1b: Recalculate the cheap influence and uplift maps if any tectonic param has changed.
-        if self.tectonic_params_dirty or self.cached_tectonic_influence_map is None:
-            self.logger.info("Tectonic parameters changed. Recalculating influence and uplift maps...")
-            # This now uses the cached distance data and is very fast.
-            from world_generator import tectonics # Import the module directly
-            from world_generator.config import CM_PER_KM
-            radius_cm = self.world_generator.settings['mountain_influence_radius_km'] * CM_PER_KM
-            self.cached_tectonic_influence_map = tectonics.calculate_influence_map(
-                self.cached_dist1, self.cached_dist2, radius_cm
-            )
-            
-            # The uplift map also depends on the influence map, so it's recalculated here.
-            self.cached_tectonic_uplift_map = self.world_generator.get_tectonic_uplift(
-                wx_grid, wy_grid, influence_map=self.cached_tectonic_influence_map
-            )
-            self.logger.info("Tectonic map caching complete.")
+        if any(d is None for d in [elevation, temperature, humidity, soil_depth, uplift]):
+            self.logger.error("One or more master data arrays are missing.")
+            return np.zeros((PREVIEW_RESOLUTION_WIDTH, PREVIEW_RESOLUTION_HEIGHT, 3), dtype=np.uint8)
 
-        # --- Stage 2: Terrain Generation ---
-        # This runs if terrain or tectonic params change.
-        if self.terrain_maps_dirty or self.cached_final_elevation_map is None:
-            self.logger.info("Terrain parameters changed. Recalculating bedrock, soil, and final elevation...")
-            self.cached_bedrock_map = self.world_generator._get_bedrock_elevation(
-                wx_grid, wy_grid, tectonic_uplift_map=self.cached_tectonic_uplift_map
-            )
-            
-            # Manually perform the steps of get_elevation to cache intermediate maps
-            water_level = self.world_generator.settings['terrain_levels']['water']
-            land_mask = self.cached_bedrock_map >= water_level
-            self.cached_slope_map = self.world_generator._get_slope(self.cached_bedrock_map)
-            self.cached_soil_depth_map = self.world_generator._get_soil_depth(self.cached_slope_map)
-            self.cached_soil_depth_map[~land_mask] = 0.0
-            self.cached_final_elevation_map = np.clip(self.cached_bedrock_map + self.cached_soil_depth_map, 0.0, 1.0)
-            
-            self.live_preview_elevation_data = self.cached_final_elevation_map
-            self.logger.info("Terrain map caching complete.")
+        # --- 2. Downsample the master arrays to preview resolution ---
+        master_h, master_w = elevation.shape
+        zoom_h = PREVIEW_RESOLUTION_HEIGHT / master_h
+        zoom_w = PREVIEW_RESOLUTION_WIDTH / master_w
+        
+        # Use order=1 (bilinear) for smooth downsampling
+        preview_elevation = zoom(elevation, (zoom_h, zoom_w), order=1)
+        preview_temp = zoom(temperature, (zoom_h, zoom_w), order=1)
+        preview_humidity = zoom(humidity, (zoom_h, zoom_w), order=1)
+        preview_soil = zoom(soil_depth, (zoom_h, zoom_w), order=1)
+        preview_uplift = zoom(uplift, (zoom_h, zoom_w), order=1)
 
-            # --- Cache all terrain-dependent factors ---
-            self.logger.info("Recalculating all terrain-dependent factors (humidity, climate noise)...")
-            self.cached_coastal_factor_map = self.world_generator.calculate_coastal_factor_map(
-                self.cached_final_elevation_map, wx_grid.shape
-            )
-            self.cached_shadow_factor_map = self.world_generator.calculate_shadow_factor_map(
-                self.cached_final_elevation_map, wx_grid.shape
-            )
-            self.cached_climate_noise_map = self.world_generator._generate_base_noise(
-                wx_grid, wy_grid,
-                seed_offset=self.world_generator.settings['temp_seed_offset'],
-                scale=self.world_generator.settings['climate_noise_scale']
-            )
-            self.logger.info("Terrain-dependent factor caching complete.")
-
-        # --- Stage 3: Climate Generation ---
-        # This runs if any parameter changes, using the cached elevation map and factors.
-        self.live_preview_temp_data = self.world_generator.get_temperature(
-            wx_grid, wy_grid, self.cached_final_elevation_map,
-            base_noise=self.cached_climate_noise_map
-        )
-        self.live_preview_humidity_data = self.world_generator.get_humidity(
-            wx_grid, wy_grid, self.cached_final_elevation_map, self.live_preview_temp_data,
-            coastal_factor_map=self.cached_coastal_factor_map,
-            shadow_factor_map=self.cached_shadow_factor_map
-        )
-
-        # --- Stage 4: Biome Classification (if needed) ---
-        # The expensive biome calculation is now part of the main data pipeline
-        # and is only re-run when climate or terrain data has changed.
-        if self.climate_maps_dirty or self.cached_biome_map is None:
-            self.logger.info("Climate or terrain changed, recalculating biome map...")
-            self.cached_biome_map = color_maps.calculate_biome_map(
-                self.cached_final_elevation_map,
-                self.live_preview_temp_data,
-                self.live_preview_humidity_data,
-                self.cached_soil_depth_map
-            )
-            self.logger.info("Biome map caching complete.")
-
-        # --- Stage 5: Colorization ---
-        # This always runs, but is now extremely fast for all view modes.
+        # --- 3. Colorize the downsampled data ---
         if self.view_mode == "terrain":
-            return color_maps.get_terrain_color_array(self.cached_biome_map, self.biome_lut)
+            biome_map = color_maps.calculate_biome_map(preview_elevation, preview_temp, preview_humidity, preview_soil)
+            return color_maps.get_terrain_color_array(biome_map, self.biome_lut)
         elif self.view_mode == "temperature":
-            return color_maps.get_temperature_color_array(self.live_preview_temp_data, self.temp_lut)
+            return color_maps.get_temperature_color_array(preview_temp, self.temp_lut)
         elif self.view_mode == "humidity":
-            return color_maps.get_humidity_color_array(self.live_preview_humidity_data, self.humidity_lut)
+            return color_maps.get_humidity_color_array(preview_humidity, self.humidity_lut)
         elif self.view_mode == "elevation":
-            return color_maps.get_elevation_color_array(self.cached_final_elevation_map)
+            return color_maps.get_elevation_color_array(preview_elevation)
         elif self.view_mode == "soil_depth":
             max_depth = self.world_generator.settings['max_soil_depth_units']
-            if max_depth > 0:
-                normalized_soil = self.cached_soil_depth_map / max_depth
-            else:
-                normalized_soil = np.zeros_like(self.cached_soil_depth_map)
+            normalized_soil = preview_soil / max_depth if max_depth > 0 else np.zeros_like(preview_soil)
             return color_maps.get_elevation_color_array(normalized_soil)
         else: # tectonic
-            # The maximum possible value for the uplift map is when influence is 1,
-            # noise is 1, and strength is at its max (5.0). So, 1 * (1+1) * 5.0 = 10.0.
-            # We normalize against this fixed theoretical maximum to ensure the
-            # visualization correctly reflects changes in strength.
             THEORETICAL_MAX_UPLIFT = 10.0
-            normalized_map = self.cached_tectonic_uplift_map / THEORETICAL_MAX_UPLIFT
+            normalized_map = preview_uplift / THEORETICAL_MAX_UPLIFT
             return color_maps.get_elevation_color_array(np.clip(normalized_map, 0.0, 1.0))
 
     def _update_tooltip(self):
@@ -1465,8 +1421,6 @@ class MainMenuState:
             text="Browse Baked Worlds",
             manager=self.ui_manager
         )
-        # The browser button is disabled for now, as the feature is not implemented yet.
-        self.browser_button.disable()
 
     def handle_events(self, events):
         """Processes user input for the main menu."""
@@ -1481,6 +1435,9 @@ class MainMenuState:
                 if event.ui_element == self.editor_button:
                     self.logger.info("Event: 'Live World Editor' button pressed.")
                     self.next_state = ("GOTO_STATE", "editor")
+                elif event.ui_element == self.browser_button:
+                    self.logger.info("Event: 'Browse Baked Worlds' button pressed.")
+                    self.next_state = ("GOTO_STATE", "browser")
 
     def update(self, time_delta):
         """Update state logic. Returns a signal for the state machine."""
@@ -1517,8 +1474,8 @@ class Application:
         # --- State Machine ---
         self.states = {
             "main_menu": MainMenuState(self),
-            "editor": EditorState(self)
-            # Future states like "browser" and "viewer" will be added here
+            "editor": EditorState(self),
+            "browser": WorldBrowserState(self)
         }
         self.active_state_name = "main_menu"
         self.active_state = self.states[self.active_state_name]
@@ -1591,9 +1548,19 @@ class Application:
                     if signal_type == "QUIT":
                         self.is_running = False
                     elif signal_type == "GOTO_STATE":
-                        self.logger.info(f"Transitioning from state '{self.active_state_name}' to '{data}'...")
-                        self.active_state_name = data
-                        self.active_state = self.states[self.active_state_name]
+                        # Check if the data is a tuple (state_name, payload)
+                        if isinstance(data, tuple):
+                            state_name, payload = data
+                            self.logger.info(f"Transitioning to new state '{state_name}' with data...")
+                            if state_name == "viewer":
+                                # Create the ViewerState on-the-fly with the package path
+                                self.active_state = ViewerState(self, package_path=payload)
+                                self.active_state_name = state_name
+                        else: # It's just a string (state_name)
+                            state_name = data
+                            self.logger.info(f"Transitioning from state '{self.active_state_name}' to '{state_name}'...")
+                            self.active_state_name = state_name
+                            self.active_state = self.states[self.active_state_name]
 
                 self.active_state.draw(self.screen)
                 pygame.display.flip()
@@ -1612,6 +1579,318 @@ class Application:
                 self.active_state._report_profiling_results()
             pygame.quit()
             sys.exit()
+
+class WorldBrowserState:
+    """
+    A state for browsing, selecting, and loading baked world packages.
+    """
+    def __init__(self, app):
+        self.app = app
+        self.logger = app.logger
+        self.ui_manager = pygame_gui.UIManager((app.screen_width, app.screen_height))
+        
+        self.next_state = None
+        self.baked_worlds = {} # Dict to store name -> path mapping
+        self.selected_world_path = None
+
+        self._scan_for_worlds()
+        self._setup_ui()
+
+    def _scan_for_worlds(self):
+        """Scans the 'baked_worlds' directory for valid packages."""
+        self.logger.info("Scanning for baked world packages...")
+        browse_dir = "baked_worlds"
+        if not os.path.isdir(browse_dir):
+            self.logger.warning(f"'{browse_dir}' directory not found. Creating it.")
+            os.makedirs(browse_dir)
+            return
+
+        for item_name in os.listdir(browse_dir):
+            item_path = os.path.join(browse_dir, item_name)
+            manifest_path = os.path.join(item_path, "manifest.json")
+            if os.path.isdir(item_path) and os.path.isfile(manifest_path):
+                try:
+                    with open(manifest_path, 'r') as f:
+                        manifest = json.load(f)
+                        world_name = manifest.get("world_name", item_name)
+                        self.baked_worlds[world_name] = item_path
+                        self.logger.info(f"Found valid package: '{world_name}' at {item_path}")
+                except (json.JSONDecodeError, KeyError):
+                    self.logger.warning(f"Could not parse manifest for '{item_name}'. Skipping.")
+        
+        if not self.baked_worlds:
+            self.logger.info("No valid baked world packages found.")
+
+    def _setup_ui(self):
+        """Creates the UI for the browser."""
+        self.back_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(10, 10, 200, 40),
+            text="Back to Main Menu",
+            manager=self.ui_manager
+        )
+
+        # --- Create the Selection List ---
+        list_width = 400
+        list_height = self.app.screen_height - 150
+        list_x = (self.app.screen_width - list_width) // 2
+        self.world_list = pygame_gui.elements.UISelectionList(
+            relative_rect=pygame.Rect(list_x, 60, list_width, list_height),
+            item_list=list(self.baked_worlds.keys()), # Populate with world names
+            manager=self.ui_manager
+        )
+
+        # --- Create the Load Button (initially disabled) ---
+        button_width = 200
+        button_x = (self.app.screen_width - button_width) // 2
+        self.load_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(button_x, self.app.screen_height - 80, button_width, 50),
+            text="Load Selected World",
+            manager=self.ui_manager
+        )
+        self.load_button.disable()
+
+    def handle_events(self, events):
+        """Processes user input for the browser."""
+        for event in events:
+            self.ui_manager.process_events(event)
+
+            if event.type == pygame.QUIT:
+                self.next_state = ("QUIT", None)
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.next_state = ("GOTO_STATE", "main_menu")
+            elif event.type == pygame_gui.UI_BUTTON_PRESSED:
+                if event.ui_element == self.back_button:
+                    self.next_state = ("GOTO_STATE", "main_menu")
+                elif event.ui_element == self.load_button:
+                    if self.selected_world_path:
+                        self.logger.info(f"Load button pressed for world: {self.selected_world_path}")
+                        # Signal to go to the viewer, passing the selected path as data.
+                        self.next_state = ("GOTO_STATE", ("viewer", self.selected_world_path))
+            
+            # --- Handle list selection events ---
+            elif event.type == pygame_gui.UI_SELECTION_LIST_NEW_SELECTION:
+                if event.ui_element == self.world_list:
+                    selected_world_name = event.text
+                    self.selected_world_path = self.baked_worlds.get(selected_world_name)
+                    if self.selected_world_path:
+                        self.logger.info(f"Selected world: '{selected_world_name}'")
+                        self.load_button.enable()
+                    else:
+                        self.load_button.disable()
+
+    def update(self, time_delta):
+        """Update state logic. Returns a signal for the state machine."""
+        self.ui_manager.update(time_delta)
+        
+        if self.next_state:
+            signal = self.next_state
+            self.next_state = None
+            return signal
+        return None
+
+    def draw(self, screen):
+        """Renders the browser."""
+        screen.fill((40, 20, 20)) # A different background color for the browser
+        self.ui_manager.draw_ui(screen)
+
+class ViewerCamera:
+    """A simple camera for the viewer to handle pan and zoom."""
+    def __init__(self, screen_width, screen_height, world_pixel_width, world_pixel_height):
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.world_pixel_width = world_pixel_width
+        self.world_pixel_height = world_pixel_height
+
+        zoom_x = self.screen_width / self.world_pixel_width if self.world_pixel_width > 0 else 1
+        zoom_y = self.screen_height / self.world_pixel_height if self.world_pixel_height > 0 else 1
+        self.zoom = min(zoom_x, zoom_y) if min(zoom_x, zoom_y) > 0 else MIN_ZOOM
+
+        self.x = self.world_pixel_width / 2
+        self.y = self.world_pixel_height / 2
+
+    def world_to_screen(self, world_x, world_y):
+        screen_x = (world_x - self.x) * self.zoom + self.screen_width / 2
+        screen_y = (world_y - self.y) * self.zoom + self.screen_height / 2
+        return screen_x, screen_y
+
+    def pan(self, dx, dy):
+        if self.zoom > 0:
+            self.x += dx / self.zoom
+            self.y += dy / self.zoom
+
+    def zoom_in(self):
+        self.zoom = min(MAX_ZOOM, self.zoom * (1 + ZOOM_SPEED))
+
+    def zoom_out(self):
+        self.zoom = max(MIN_ZOOM, self.zoom * (1 - ZOOM_SPEED))
+
+class BakedWorld:
+    """
+    Represents a loaded Baked World Package.
+    Handles loading the manifest and on-demand loading/caching of chunk images.
+    """
+    def __init__(self, package_path: str):
+        self.package_path = package_path
+        self.chunks_path = os.path.join(self.package_path, "chunks")
+        self.manifest_path = os.path.join(self.package_path, "manifest.json")
+        self.logger = logging.getLogger(__name__)
+        self.chunk_cache = {}
+
+        if not os.path.exists(self.manifest_path):
+            raise FileNotFoundError(f"Could not find manifest.json in '{package_path}'")
+
+        with open(self.manifest_path, 'r') as f:
+            manifest_data = json.load(f)
+
+        self.world_name = manifest_data.get("world_name", "Unnamed World")
+        self.dimensions_chunks = tuple(manifest_data.get("world_dimensions_chunks", (0, 0)))
+        self.chunk_resolution = manifest_data.get("chunk_resolution_pixels", 100)
+        self.chunk_map = manifest_data.get("chunk_map", {}) # Load all view maps
+
+        self.world_pixel_width = self.dimensions_chunks[0] * self.chunk_resolution
+        self.world_pixel_height = self.dimensions_chunks[1] * self.chunk_resolution
+        
+        self.logger.info(f"Successfully loaded world: '{self.world_name}' ({self.world_pixel_width}x{self.world_pixel_height} pixels).")
+
+    def get_chunk_surface(self, cx: int, cy: int, view_mode: str) -> pygame.Surface:
+        """
+        Retrieves a chunk's pygame.Surface for a specific view mode.
+        Handles on-demand loading from disk and caching.
+        """
+        view_chunk_map = self.chunk_map.get(view_mode)
+        if not view_chunk_map:
+            return None # This view mode doesn't exist
+
+        coord_key = f"{cx},{cy}"
+        chunk_hash = view_chunk_map.get(coord_key)
+        if not chunk_hash:
+            return None
+
+        if chunk_hash in self.chunk_cache:
+            return self.chunk_cache[chunk_hash]
+
+        try:
+            filename = f"{chunk_hash}.png"
+            filepath = os.path.join(self.chunks_path, filename)
+            surface = pygame.image.load(filepath).convert()
+            self.chunk_cache[chunk_hash] = surface
+            return surface
+        except pygame.error:
+            self.logger.error(f"Failed to load chunk image for hash '{chunk_hash}' at '{filepath}'")
+            return None
+        
+class ViewerState:
+    """
+    A state for viewing and exploring a single baked world package.
+    """
+    def __init__(self, app, package_path: str):
+        self.app = app
+        self.logger = app.logger
+        self.screen = app.screen
+        self.ui_manager = pygame_gui.UIManager((app.screen_width, app.screen_height))
+        
+        self.next_state = None
+        
+        try:
+            self.world = BakedWorld(package_path)
+            self.camera = ViewerCamera(app.screen_width, app.screen_height, self.world.world_pixel_width, self.world.world_pixel_height)
+            
+            # --- View Mode State ---
+            self.view_modes = list(self.world.chunk_map.keys())
+            self.current_view_mode_index = 0
+            if not self.view_modes:
+                self.logger.warning("Baked world has no viewable maps in its manifest.")
+                # Default to a dummy view to prevent crashes
+                self.view_modes = ["unknown"]
+
+            self._setup_ui()
+        except FileNotFoundError:
+            self.logger.critical(f"Failed to load world at '{package_path}'. Returning to browser.")
+            self.next_state = ("GOTO_STATE", "browser")
+
+    def _setup_ui(self):
+        """Creates the UI for the viewer (e.g., a back button)."""
+        self.back_button = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(10, 10, 200, 40),
+            text="Back to World Browser",
+            manager=self.ui_manager
+        )
+
+    def handle_events(self, events):
+        """Processes user input for the viewer."""
+        for event in events:
+            self.ui_manager.process_events(event)
+
+            if event.type == pygame.QUIT:
+                self.next_state = ("QUIT", None)
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                self.next_state = ("GOTO_STATE", "browser")
+            elif event.type == pygame.MOUSEWHEEL:
+                if event.y > 0: self.camera.zoom_in()
+                elif event.y < 0: self.camera.zoom_out()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_v:
+                self.current_view_mode_index = (self.current_view_mode_index + 1) % len(self.view_modes)
+                self.logger.info(f"Switched viewer to '{self.view_modes[self.current_view_mode_index]}' mode.")
+            elif event.type == pygame_gui.UI_BUTTON_PRESSED:
+                if event.ui_element == self.back_button:
+                    self.next_state = ("GOTO_STATE", "browser")
+
+    def update(self, time_delta):
+        """Handles continuous input and returns signals."""
+        self.ui_manager.update(time_delta)
+        
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_w]: self.camera.pan(0, -PAN_SPEED_PIXELS)
+        if keys[pygame.K_s]: self.camera.pan(0, PAN_SPEED_PIXELS)
+        if keys[pygame.K_a]: self.camera.pan(-PAN_SPEED_PIXELS, 0)
+        if keys[pygame.K_d]: self.camera.pan(PAN_SPEED_PIXELS, 0)
+        
+        if self.next_state:
+            signal = self.next_state
+            self.next_state = None
+            return signal
+        return None
+
+    def draw(self, screen):
+        """Renders the baked world."""
+        screen.fill((10, 10, 20))
+
+        chunk_pixel_size = self.world.chunk_resolution
+        scaled_chunk_size = chunk_pixel_size * self.camera.zoom
+        if scaled_chunk_size <= 0: return
+
+        # --- CRITICAL FIX: Use self.app for screen dimensions ---
+        top_left_world_x = self.camera.x - (self.app.screen_width / 2) / self.camera.zoom
+        top_left_world_y = self.camera.y - (self.app.screen_height / 2) / self.camera.zoom
+        
+        start_cx = math.floor(top_left_world_x / chunk_pixel_size)
+        start_cy = math.floor(top_left_world_y / chunk_pixel_size)
+        
+        chunks_on_screen_x = math.ceil(self.app.screen_width / scaled_chunk_size) + 1
+        chunks_on_screen_y = math.ceil(self.app.screen_height / scaled_chunk_size) + 1
+        
+        end_cx = start_cx + chunks_on_screen_x
+        end_cy = start_cy + chunks_on_screen_y
+
+        current_view = self.view_modes[self.current_view_mode_index]
+        rendered_chunks = 0
+        for cy in range(start_cy, end_cy):
+            for cx in range(start_cx, end_cx):
+                chunk_surface = self.world.get_chunk_surface(cx, cy, current_view)
+                if chunk_surface:
+                    screen_pos = self.camera.world_to_screen(cx * chunk_pixel_size, cy * chunk_pixel_size)
+                    if screen_pos[0] < self.app.screen_width and screen_pos[1] < self.app.screen_height and \
+                       screen_pos[0] + scaled_chunk_size > 0 and screen_pos[1] + scaled_chunk_size > 0:
+                        scaled_surface = pygame.transform.scale(chunk_surface, (math.ceil(scaled_chunk_size), math.ceil(scaled_chunk_size)))
+                        screen.blit(scaled_surface, screen_pos)
+                        rendered_chunks += 1
+        
+        # Update caption to show current view mode
+        caption = (f"Baked World Viewer | View: {current_view.title()} | "
+                   f"Rendering {rendered_chunks} chunks | Zoom: {self.camera.zoom:.2f}")
+        pygame.display.set_caption(caption)
+
+        self.ui_manager.draw_ui(screen)
 
 if __name__ == '__main__':
     # CRITICAL FIX for Windows multiprocessing

@@ -122,6 +122,9 @@ class WorldGenerator:
             rng = np.random.default_rng(self.seed)
             rng.shuffle(p)
             self._p = np.stack([p, p]).flatten()
+        
+        # --- Expose the permutation table for baking ---
+        self.permutation_table = self._p
 
         self.logger.info(f"WorldGenerator initialized with seed: {self.seed}")
         # Log dimensions in both base units (cm) and human-readable units (km) for clarity.
@@ -492,3 +495,23 @@ class WorldGenerator:
         # The result is a solid mountain range whose height is modulated by noise,
         # which is then scaled by the user-defined strength.
         return influence_map * (1 + uplift_noise) * self.settings['mountain_uplift_strength']
+    
+    def get_coordinate_grid(self, world_x_cm, world_y_cm, width_cm, height_cm, resolution_w, resolution_h):
+        """
+        Generates a high-precision coordinate grid for an arbitrary rectangle.
+        This is the single authoritative method for coordinate generation.
+        """
+        pixel_w_cm = width_cm / resolution_w
+        pixel_h_cm = height_cm / resolution_h
+        
+        start_x = world_x_cm
+        start_y = world_y_cm
+        
+        # Use the baker's proven, precise calculation
+        end_x = start_x + ((resolution_w - 1) * pixel_w_cm)
+        end_y = start_y + ((resolution_h - 1) * pixel_h_cm)
+        
+        x_coords = np.linspace(start_x, end_x, resolution_w)
+        y_coords = np.linspace(start_y, end_y, resolution_h)
+        
+        return np.meshgrid(x_coords, y_coords)
