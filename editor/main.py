@@ -20,9 +20,10 @@ import multiprocessing
 from world_generator.generator import WorldGenerator
 # Import the color_maps module to access its functions.
 from world_generator import color_maps
-
-from tools.baker import bake_master_data
-from tools.package_builder import chunk_master_data
+from world_generator import tectonics
+from editor.baker import bake_master_data
+from editor.package_builder import chunk_master_data
+from editor.worker import bake_and_chunk_worker
 
 # --- UI Constants (Rule 1) ---
 UI_PANEL_WIDTH = 320
@@ -45,6 +46,22 @@ MIN_ZOOM = 0.01
 class EditorState:
     """The main application state for the live editor."""
 
+    def bake_and_chunk_worker(generator_settings: dict, master_data_path: str, logger: logging.Logger):
+        """
+        A worker function that first bakes the master data and then chunks it.
+        This is designed to be run in a separate process to avoid freezing the UI.
+        """
+        try:
+            logger.info("WORKER: Starting master bake...")
+            bake_master_data(generator_settings, logger)
+            logger.info("WORKER: Master bake complete. Starting chunking...")
+            chunk_master_data(master_data_path, logger)
+            logger.info("WORKER: Chunking complete.")
+            return True
+        except Exception as e:
+            logger.critical(f"WORKER: An exception occurred during bake/chunk process: {e}", exc_info=True)
+            return False
+
     def __init__(self, app):
         # --- Core Application References ---
         self.app = app
@@ -66,11 +83,8 @@ class EditorState:
             with open(generation_config_path, 'r') as f:
                 world_gen_params = json.load(f)
         else:
-            self.logger.warning(f"No generation config found at '{generation_config_path}'.")
-            self.logger.info("Performing initial master data bake with default settings...")
+            self.logger.warning(f"No generation config found at '{generation_config_path}'. Using default settings.")
             world_gen_params = self.config.get('world_generation_parameters', {})
-            # This is a blocking call that creates the initial master data
-            bake_master_data(world_gen_params, self.logger)
 
         # --- 2. INITIALIZE CORE COMPONENTS USING THE "TRUTH" ---
         self.world_generator = WorldGenerator(config=world_gen_params, logger=self.logger)
@@ -491,23 +505,25 @@ class EditorState:
             container=self.ui_panel
         )
 
-    def _rebake_master_data(self):
-        """
-        Triggers a blocking re-bake of the master data using the current
-        world_generator settings.
-        """
-        self.logger.info("Change detected. Re-baking master data...")
+    def _load_master_data(self):
+        """Loads all .npy files from the master_data directory."""
+        self.logger.info(f"Loading master data from '{self.master_data_path}'...")
+        data_dir = os.path.join(self.master_data_path, "master_data")
+        if not os.path.isdir(data_dir):
+            self.logger.error(f"Master data directory not found at '{data_dir}'. Cannot load.")
+            return
+
+        for filename in os.listdir(data_dir):
+            if filename.endswith(".npy"):
+                name = filename.split('.')[0]
+                try:
+                    self.master_data[name] = np.load(os.path.join(data_dir, filename))
+                    self.logger.info(f"  - Loaded {name}.npy (shape: {self.master_data[name].shape})")
+                except Exception as e:
+                    self.logger.error(f"Failed to load {filename}: {e}")
         
-        # For now, we can't show a "Generating..." message easily because the
-        # bake is blocking, but we will see the log output.
-        
-        # Call the master baker function directly
-        bake_master_data(self.world_generator.settings, self.logger)
-        
-        # After the bake is complete, reload the data and trigger a redraw
-        self._load_master_data()
-        self.terrain_maps_dirty = True
-        self.logger.info("Master data re-baked and reloaded successfully.")
+        # Trigger a redraw
+        self.terrain_maps_dirty = True # Re-using this flag is fine
 
     def _load_master_data(self):
         """Loads all .npy files from the master_data directory."""
@@ -583,8 +599,8 @@ class EditorState:
                 param_name = param_map.get(event.ui_element)
                 if param_name:
                     self._update_world_parameter(param_name, event.value)
-                    # --- Trigger a full rebake on slider change ---
-                    self._rebake_master_data()
+                    # --- OPTIMIZATION: Trigger a fast preview refresh, not a full bake ---
+                    self.terrain_maps_dirty = True
             
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
                 if event.ui_element == self.apply_size_button:
@@ -594,16 +610,16 @@ class EditorState:
                         self.logger.warning("Packaging is already in progress.")
                         return
                     
-                    self.logger.info("Starting background packaging process...")
+                    self.logger.info("Starting background bake and packaging process...")
                     self.is_packaging = True
-                    self.bake_button.set_text("Packaging...")
+                    self.bake_button.set_text("Baking & Packaging...")
                     self.bake_button.disable() # Prevent double-clicking
 
                     # We only need one worker for this single task
                     self.packaging_pool = multiprocessing.Pool(processes=1)
                     self.packaging_result = self.packaging_pool.apply_async(
-                        chunk_master_data,
-                        (self.master_data_path, self.logger)
+                        bake_and_chunk_worker,
+                        (self.world_generator.settings, self.master_data_path, self.logger)
                     )
                 elif event.ui_element == self.main_menu_button:
                     self.logger.info("Event: 'Return to Main Menu' button pressed.")
@@ -616,8 +632,8 @@ class EditorState:
                     # Convert the user-friendly text to the lowercase key the generator expects.
                     selected_mode = event.text.lower()
                     self._update_world_parameter('world_edge_mode', selected_mode)
-                    # --- Trigger a full rebake on dropdown change ---
-                    self._rebake_master_data()
+                    # --- OPTIMIZATION: Trigger a fast preview refresh, not a full bake ---
+                    self.terrain_maps_dirty = True
 
             # --- Handle user-driven events only if test is not running ---
             if event.type == pygame.MOUSEWHEEL:
@@ -699,8 +715,8 @@ class EditorState:
 
     def _apply_world_size_changes(self):
         """
-        Parses text inputs for world size, updates the settings, and triggers
-        a full re-bake of the master data.
+        Parses text inputs for world size, updates the generator's state,
+        and triggers a fast live preview refresh.
         """
         try:
             new_width = int(self.world_width_input.get_text())
@@ -720,18 +736,18 @@ class EditorState:
             chunk_size_cm = self.world_generator.settings['chunk_size_cm']
             self.world_generator.world_width_cm = new_width * chunk_size_cm
             self.world_generator.world_height_cm = new_height * chunk_size_cm
-
-            # 2. Trigger a re-bake of the master data with the new dimensions.
-            self._rebake_master_data()
             
-            # 3. Re-initialize the Camera, which depends on the new dimensions.
+            # 2. Re-initialize the Camera, which depends on the new dimensions.
             self.camera = Camera(self.config, self.world_generator)
             
-            # 4. Frame the new world size in the camera view.
+            # 3. Frame the new world size in the camera view.
             self._frame_world_in_camera()
             
-            # 5. Update the UI label.
+            # 4. Update the UI label.
             self._update_km_size_label()
+
+            # 5. Trigger a fast preview refresh.
+            self.terrain_maps_dirty = True
 
         except ValueError:
             self.logger.error("Invalid world size input. Please enter integers only.")
@@ -768,52 +784,68 @@ class EditorState:
 
     def _generate_preview_color_array(self) -> np.ndarray:
         """
-        Generates the preview by downsampling and colorizing the loaded Master Data.
+        Generates all world data directly at preview resolution for fast iteration.
+        This is the core of the live editor's performance optimization.
         """
-        if not self.master_data:
-            self.logger.warning("No master data loaded, cannot generate preview.")
-            return np.zeros((PREVIEW_RESOLUTION_WIDTH, PREVIEW_RESOLUTION_HEIGHT, 3), dtype=np.uint8)
-
-        # --- 1. Get master data arrays ---
-        elevation = self.master_data.get("elevation")
-        temperature = self.master_data.get("temperature")
-        humidity = self.master_data.get("humidity")
-        soil_depth = self.master_data.get("soil_depth")
-        uplift = self.master_data.get("uplift")
-
-        if any(d is None for d in [elevation, temperature, humidity, soil_depth, uplift]):
-            self.logger.error("One or more master data arrays are missing.")
-            return np.zeros((PREVIEW_RESOLUTION_WIDTH, PREVIEW_RESOLUTION_HEIGHT, 3), dtype=np.uint8)
-
-        # --- 2. Downsample the master arrays to preview resolution ---
-        master_h, master_w = elevation.shape
-        zoom_h = PREVIEW_RESOLUTION_HEIGHT / master_h
-        zoom_w = PREVIEW_RESOLUTION_WIDTH / master_w
+        self.logger.info("Generating live preview data at preview resolution...")
         
-        # Use order=1 (bilinear) for smooth downsampling
-        preview_elevation = zoom(elevation, (zoom_h, zoom_w), order=1)
-        preview_temp = zoom(temperature, (zoom_h, zoom_w), order=1)
-        preview_humidity = zoom(humidity, (zoom_h, zoom_w), order=1)
-        preview_soil = zoom(soil_depth, (zoom_h, zoom_w), order=1)
-        preview_uplift = zoom(uplift, (zoom_h, zoom_w), order=1)
+        # 1. Create the coordinate grid AT PREVIEW RESOLUTION.
+        # This is the key optimization. We ask the generator for the exact
+        # number of points we need, not the millions for the full bake.
+        wx_grid, wy_grid = self.world_generator.get_coordinate_grid(
+            world_x_cm=0,
+            world_y_cm=0,
+            width_cm=self.world_generator.world_width_cm,
+            height_cm=self.world_generator.world_height_cm,
+            resolution_w=PREVIEW_RESOLUTION_WIDTH,
+            resolution_h=PREVIEW_RESOLUTION_HEIGHT
+        )
 
-        # --- 3. Colorize the downsampled data ---
+        # 2. Run the entire data generation pipeline on the low-resolution grid.
+        # The logic is identical to the master baker, ensuring fidelity.
+        
+        # Tectonics
+        _, dist1, dist2 = self.world_generator.get_tectonic_data(wx_grid, wy_grid, self.world_generator.world_width_cm, self.world_generator.world_height_cm, self.world_generator.settings['num_tectonic_plates'], self.world_generator.settings['seed'])
+        radius_cm = self.world_generator.settings['mountain_influence_radius_km'] * 100000.0
+        influence_map = tectonics.calculate_influence_map(dist1, dist2, radius_cm)
+        uplift_map = self.world_generator.get_tectonic_uplift(wx_grid, wy_grid, influence_map)
+
+        # Terrain
+        bedrock_map = self.world_generator._get_bedrock_elevation(wx_grid, wy_grid, tectonic_uplift_map=uplift_map)
+        slope_map = self.world_generator._get_slope(bedrock_map)
+        soil_depth_map_raw = self.world_generator._get_soil_depth(slope_map)
+        water_level = self.world_generator.settings['terrain_levels']['water']
+        land_mask = bedrock_map >= water_level
+        soil_depth_map = np.copy(soil_depth_map_raw)
+        soil_depth_map[~land_mask] = 0.0
+        final_elevation_map = np.clip(bedrock_map + soil_depth_map, 0.0, 1.0)
+
+        # Climate
+        climate_noise_map = self.world_generator._generate_base_noise(wx_grid, wy_grid, seed_offset=self.world_generator.settings['temp_seed_offset'], scale=self.world_generator.settings['climate_noise_scale'])
+        temperature_map = self.world_generator.get_temperature(wx_grid, wy_grid, final_elevation_map, base_noise=climate_noise_map)
+        coastal_factor_map = self.world_generator.calculate_coastal_factor_map(final_elevation_map, wx_grid.shape)
+        shadow_factor_map = self.world_generator.calculate_shadow_factor_map(final_elevation_map, wx_grid.shape)
+        humidity_map = self.world_generator.get_humidity(wx_grid, wy_grid, final_elevation_map, temperature_map, coastal_factor_map, shadow_factor_map)
+
+        self.logger.info("Live preview data generation complete.")
+
+        # 3. Colorize the preview-resolution data.
         if self.view_mode == "terrain":
-            biome_map = color_maps.calculate_biome_map(preview_elevation, preview_temp, preview_humidity, preview_soil)
+            biome_map = color_maps.calculate_biome_map(final_elevation_map, temperature_map, humidity_map, soil_depth_map)
             return color_maps.get_terrain_color_array(biome_map, self.biome_lut)
         elif self.view_mode == "temperature":
-            return color_maps.get_temperature_color_array(preview_temp, self.temp_lut)
+            return color_maps.get_temperature_color_array(temperature_map, self.temp_lut)
         elif self.view_mode == "humidity":
-            return color_maps.get_humidity_color_array(preview_humidity, self.humidity_lut)
+            return color_maps.get_humidity_color_array(humidity_map, self.humidity_lut)
         elif self.view_mode == "elevation":
-            return color_maps.get_elevation_color_array(preview_elevation)
+            return color_maps.get_elevation_color_array(final_elevation_map)
         elif self.view_mode == "soil_depth":
             max_depth = self.world_generator.settings['max_soil_depth_units']
-            normalized_soil = preview_soil / max_depth if max_depth > 0 else np.zeros_like(preview_soil)
+            normalized_soil = soil_depth_map / max_depth if max_depth > 0 else np.zeros_like(soil_depth_map)
             return color_maps.get_elevation_color_array(normalized_soil)
         else: # tectonic
             THEORETICAL_MAX_UPLIFT = 10.0
-            normalized_map = preview_uplift / THEORETICAL_MAX_UPLIFT
+            normalized_map = uplift_map / THEORETICAL_MAX_UPLIFT
             return color_maps.get_elevation_color_array(np.clip(normalized_map, 0.0, 1.0))
 
     def _update_tooltip(self):
@@ -1100,6 +1132,8 @@ class EditorState:
         
         if new_plates != current_plates:
             self._update_world_parameter('num_tectonic_plates', new_plates)
+            # --- OPTIMIZATION: Trigger a fast preview refresh, not a full bake ---
+            self.terrain_maps_dirty = True
 
 class MainMenuState:
     """The main menu state, acting as the application's central hub."""

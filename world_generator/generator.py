@@ -410,6 +410,14 @@ class WorldGenerator:
         """Calculates the coastal humidity factor based on distance to water."""
         water_level = self.settings['terrain_levels']['water']
         water_mask = elevation_data < water_level
+
+        # --- Realism Fix (Rule 3) ---
+        # If there is no water on the entire map, the coastal humidity factor
+        # must be zero everywhere. This prevents the simulation from generating
+        # humidity from a non-existent source.
+        if not np.any(water_mask):
+            return np.zeros_like(elevation_data, dtype=float)
+
         distance_grid_units = distance_transform_edt(np.logical_not(water_mask))
         grid_falloff_dist = self.settings['max_coastal_distance_km'] * (grid_shape[1] / (self.world_width_cm / DEFAULTS.CM_PER_KM))
         normalized_distance = distance_grid_units / grid_falloff_dist
