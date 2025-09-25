@@ -1,6 +1,4 @@
-# FOLDER: tools/
-
-# baker.py
+# editor/baker.py
 
 import json
 import logging

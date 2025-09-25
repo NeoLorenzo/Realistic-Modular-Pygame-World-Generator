@@ -44,38 +44,20 @@ The goal is to generate worlds with believable and emergent characteristics, not
 
 The project is more than just a generator; it's a design tool. The **Live Editor** provides a real-time, full-world preview that updates instantly as you adjust parameters, allowing for fast iteration and artistic direction. A **real-time data tooltip** provides direct quantitative feedback on the climate at any point on the map, turning abstract parameters into tangible results. This workflow empowers designers to craft a specific world rather than just accepting a random seed.
 
-## Project Structure
+## System Architecture: A Complete Design & Viewing Suite
 
-The project is now streamlined to focus on the core generator and the live editor application.
+The application is a multi-state suite that provides a complete workflow for world creation, from initial design to final exploration.
 
-```
-Realistic-Modular-Pygame-World-Generator/
-├── editor/                         # The interactive world design tool.
-│   ├── main.py                     # Application entry point and main loop.
-│   ├── renderer.py                 # Pygame-specific rendering logic.
-│   ├── camera.py                   # Handles view transformations (pan/zoom).
-│   ├── config.json                 # Default simulation parameters for the editor.
-│   └── logging_config.json         # Logging configuration for the editor.
-│
-├── requirements.txt                # Project dependencies.
-│
-└── world_generator/                # The core, standalone, data-only library.
-    ├── generator.py                # Contains the main WorldGenerator class.
-    ├── noise.py                    # Optimized Perlin noise implementation.
-    ├── tectonics.py                # Tectonic plate and mountain generation.
-    ├── config.py                   # Default internal constants for the generator.
-    └── color_maps.py               # Shared color mapping utilities.
-```
+1.  **Main Menu:** The application starts at a main menu, allowing you to choose between the `Live Editor` and the `World Browser`.
 
-## System Architecture: The Live Editor
+2.  **The Live Editor (Design Phase):** This is the interactive design environment for rapid iteration.
+    *   **Real-Time Feedback:** A full-world preview is regenerated instantly whenever you adjust a parameter, providing immediate visual feedback.
+    *   **Master Bake on Change:** Every parameter change triggers a full, blocking "master bake" using `baker.py`. This generates the full-resolution, canonical NumPy data arrays for the entire world, ensuring the preview is always a downsampled version of the "source of truth."
+    *   **Packaging:** From the editor, you can initiate the packaging process. This runs `package_builder.py` in the background to convert the high-resolution master data into an optimized, distributable format with chunked PNGs.
 
-The project now operates as a single-tier application focused on providing a high-quality, interactive design experience.
-
-When you run `editor.main`, you enter the Live Editor. Its purpose is rapid design and iteration.
-*   **Single Preview Surface:** Instead of rendering thousands of chunks, the editor generates one single, moderately-sized image of the entire world.
-*   **Real-Time Feedback:** This preview image is regenerated whenever you change a parameter using the UI sliders, providing instant visual feedback.
-*   **Pixelated Zoom:** Zooming is fast but pixelated, as it simply scales the single preview image. This is by design to maintain interactivity.
-*   **Non-Destructive:** All changes are made in memory. The original `config.json` is never modified.
+3.  **The World Browser & Viewer (Exploration Phase):**
+    *   **Browse Packages:** The browser scans for completed world packages and displays them in a list.
+    *   **High-Performance Viewing:** Selecting a world opens it in the viewer, which is designed for high-performance exploration. It only loads the pre-rendered image chunks that are currently on-screen, allowing for smooth panning and zooming across massive, high-resolution worlds without any real-time generation overhead.
 
 ### The Generation Pipeline: From Seed to Climate
 
@@ -112,7 +94,9 @@ Configuration is split into two distinct types, following Rule 1.
 
 ## Performance & Optimization
 
-*   **Live Editor:** The editor's responsiveness is determined by the `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` constants in `main.py`. The on-the-fly climate and soil calculations are performed on this preview-sized array, maintaining interactivity. Critical code paths in the noise generation algorithms are JIT-compiled with Numba for C-like speed.
+*   **Live Editor:** The editor's responsiveness is achieved by performing all generation on downsampled versions of the master data arrays. The final preview surface resolution is controlled by `PREVIEW_RESOLUTION_WIDTH` and `PREVIEW_RESOLUTION_HEIGHT` in `main.py`. Critical code paths in the noise generation algorithms are JIT-compiled with Numba for C-like speed.
+*   **Baked World Viewer:** The viewer is designed for maximum performance. It performs zero on-the-fly generation. By loading only the small, pre-rendered PNG chunks visible to the camera, it allows for smooth, real-time exploration of massive worlds with minimal memory and CPU usage.
+*   **Packaging:** The `package_builder.py` script uses hashing to deduplicate identical chunks. A world with large, uniform oceans or deserts will result in a smaller final package size, as the same image file is referenced multiple times in the manifest.
 
 ## Getting Started
 
@@ -143,16 +127,21 @@ Configuration is split into two distinct types, following Rule 1.
     python -m editor.main
     ```
 
-### How to Use the Editor
+### How to Use the Application
 
-*   **Live Parameter Tuning:** Use the sliders on the right-hand panel to adjust world parameters. The preview will update automatically.
-*   **Custom World Size:** Enter new dimensions (in chunks) into the text boxes and click **"Apply Size Changes"** to re-initialize the world.
-*   **Real-Time Data:** Hover the mouse over the map to see a **real-time data tooltip** showing the temperature and humidity at that exact point.
-*   **Standard Controls:**
-    *   **Pan:** `W`, `A`, `S`, `D` keys
-    *   **Zoom:** Mouse Wheel Up/Down
-    *   **Cycle View Mode:** `V` key (Terrain, Temperature, Humidity, Elevation, Tectonic, Soil Depth)
-    *   **Exit:** `ESC` key or close the window
+1.  **Main Menu:** Launching the application presents a main menu. Choose "Live World Editor" to design a new world or "Browse Baked Worlds" to explore a completed one.
+
+2.  **In the Editor:**
+    *   **Live Parameter Tuning:** Use the sliders on the right-hand panel to adjust world parameters. The preview will update automatically after each change.
+    *   **Custom World Size:** Enter new dimensions (in chunks) into the text boxes and click **"Apply Size Changes"** to re-bake the world with the new size.
+    *   **Package for Distribution:** Once you are satisfied with the design, click the **"Package World for Distribution"** button. This will run the chunking process in the background.
+    *   **Real-Time Data:** Hover the mouse over the map to see a **real-time data tooltip** showing key climate and terrain information.
+    *   **Controls:** Pan with `W, A, S, D`, zoom with the `Mouse Wheel`, and cycle view modes with the `V` key.
+
+3.  **In the Browser/Viewer:**
+    *   **Select a World:** Click on a world name from the list and click "Load Selected World".
+    *   **Explore:** Pan and zoom across the high-resolution world smoothly. Use the `V` key to cycle through the different data maps (Terrain, Temperature, etc.) that were baked into the package.
+    *   **Return:** Press `ESC` to return to the browser, and again to return to the main menu.
 
 ## Using the Generator in Your Project
 
@@ -229,34 +218,17 @@ img.save("output_terrain_map.png")
 print("Saved terrain map to output_terrain_map.png")
 ```
 
-## Roadmap: Rebuilding the Baker
+## The End-to-End Workflow
 
-The previous baking and world viewing systems were removed to resolve critical fidelity bugs. The project now rests on the stable and proven foundation of the Live Editor. This roadmap outlines the plan to incrementally rebuild the high-performance baking and viewing functionality from scratch, ensuring correctness at every step.
+The project provides a complete, end-to-end workflow for creating and using procedurally generated worlds.
 
-### 1. Re-implement a Simple, Single-Threaded Baker
+1.  **Design in the Live Editor:** Use the powerful, real-time editor to design the world. Adjust parameters like climate, continent size, and tectonic activity until the desired look and feel is achieved. The instant preview makes this a fast and intuitive process.
 
-The first priority is to create a new, simple `baker.py` module.
-*   **Core Logic:** It will contain a single function that iterates through every chunk coordinate `(cx, cy)` in a simple `for` loop.
-*   **Fidelity First:** For each chunk, it will use the now-proven "generate padded, then crop" methodology to ensure 100% fidelity with the live editor.
-*   **Output:** It will produce the same self-contained "Baked World Package" as before, with optimized PNGs and a single `manifest.json`.
-*   **Goal:** To have a slow, but **100% correct**, baseline implementation.
+2.  **Bake and Package:** With a single click on the **"Package World for Distribution"** button, the editor orchestrates the full creation pipeline:
+    *   First, the `baker` generates the full-resolution "master data" for all layers (elevation, temperature, etc.) as raw NumPy arrays. This is the world's single source of truth.
+    *   Next, the `package_builder` takes this master data and processes it. It slices the world into a grid of smaller chunks, converts each chunk into an optimized PNG for every view mode (Terrain, Temperature, etc.), and saves them into a self-contained "Baked World Package" directory.
 
-### 2. Re-implement the Baked World Viewer
-
-With a correctly baked world package, a new viewer can be built.
-*   **New `viewer.py` and `browser.py`:** These modules will be recreated to scan the `baked_worlds` directory and load the manifest and chunk images on demand.
-*   **High-Performance:** The viewer will not perform any generation. Its only job is to efficiently load and display the pre-rendered images, allowing for smooth panning and zooming on massive worlds.
-*   **Integration:** A `MainMenuState` will be re-introduced to `main.py` to allow the user to choose between the Live Editor and the new Baked World Browser.
-
-### 3. Parallelize the Baker
-
-Once the simple baker is proven correct, performance can be addressed.
-*   **Multiprocessing:** The simple, looping logic in `baker.py` will be parallelized using Python's `multiprocessing` module.
-*   **UI Integration:** The baker will be designed to run in a background thread, providing progress updates to the UI via a queue, just as before.
-
-### 4. Add Advanced Features
-
-With the core baking/viewing loop restored and correct, new features can be added on top of this stable base, such as selective map baking and UI enhancements.
+3.  **Browse and View:** Once a world is packaged, it can be explored in the high-performance viewer. From the main menu, select the **World Browser**, choose your creation, and explore the final, high-resolution world with smooth panning and zooming. This viewer is what a final game or simulation would use to interact with the generated world.
 
 ## Architectural Principles
 

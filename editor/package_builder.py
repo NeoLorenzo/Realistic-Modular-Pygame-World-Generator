@@ -1,6 +1,4 @@
-# FOLDER: tools/
-
-# package_builder.py
+# editor/package_builder.py
 
 import json
 import logging
