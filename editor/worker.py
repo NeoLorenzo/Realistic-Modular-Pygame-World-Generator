@@ -1,3 +1,5 @@
+# editor/worker.py
+
 import logging
 
 # This worker needs access to the baker and the package_builder.

@@ -190,3 +190,33 @@ WORLD_EDGE_MODE = 'default'
 # The distance from the edge, as a percentage of the world's shorter dimension,
 # over which the blend effect occurs. 0.1 means the fade happens over the outer 10%.
 WORLD_EDGE_BLEND_DISTANCE = 0.1
+
+
+# --- Game Clock & Calendar (Rule 1) ---
+# These constants define the structure of in-game time.
+# They are used by the GameClock to provide a plug-and-play time management system.
+SECONDS_PER_MINUTE = 60
+MINUTES_PER_HOUR = 60
+HOURS_PER_DAY = 24
+DAYS_PER_MONTH = 30
+MONTHS_PER_YEAR = 12
+
+# The initial speed of the simulation. A value of 60.0 means that for every
+# 1 second of real time, 60 seconds (1 minute) of game time will pass.
+INITIAL_TIME_SCALE = 60.0
+
+
+# --- Day/Night Cycle (Rule 1) ---
+# These constants define the visual properties of the day/night cycle.
+# They are used by the DayNightCycle to produce a lighting overlay.
+SUNRISE_HOUR = 6.0
+SUNSET_HOUR = 20.0
+DAY_NIGHT_TRANSITION_DURATION_HOURS = 1.0 # Sunrise and sunset will each last this long.
+
+# Brightness is a float [0.0, 1.0] where 1.0 is full daylight and 0.0 is pitch black.
+MAX_BRIGHTNESS = 1.0
+MIN_BRIGHTNESS = 0.15 # A dark night, but not completely black for visibility.
+
+# The color of the darkness overlay. There is no "day" color, as daytime
+# should have no tint.
+NIGHT_COLOR = (10, 0, 50)       # Deep blue/purple
