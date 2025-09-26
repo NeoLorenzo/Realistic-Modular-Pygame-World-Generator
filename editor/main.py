@@ -617,9 +617,10 @@ class EditorState:
 
                     # We only need one worker for this single task
                     self.packaging_pool = multiprocessing.Pool(processes=1)
+                    # The worker no longer needs the old, hardcoded path.
                     self.packaging_result = self.packaging_pool.apply_async(
                         bake_and_chunk_worker,
-                        (self.world_generator.settings, self.master_data_path, self.logger)
+                        (self.world_generator.settings, self.logger)
                     )
                 elif event.ui_element == self.main_menu_button:
                     self.logger.info("Event: 'Return to Main Menu' button pressed.")

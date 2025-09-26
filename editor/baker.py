@@ -17,6 +17,9 @@ def bake_master_data(config: dict, logger: logging.Logger):
     """
     Generates and saves the full-resolution, raw NumPy data arrays for an entire world.
     This is the "Single Source of Truth" bake.
+    
+    Returns:
+        str: The path to the created master data package directory.
     """
     start_time = time.time()
     
@@ -101,6 +104,8 @@ def bake_master_data(config: dict, logger: logging.Logger):
     
     end_time = time.time()
     logger.info(f"Master bake complete in {end_time - start_time:.2f} seconds.")
+    
+    return output_dir
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

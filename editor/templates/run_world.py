@@ -124,10 +124,11 @@ def main():
                 if event.key == pygame.K_v:
                     world.cycle_view_mode()
                 # Game speed controls
-                if event.key == pygame.K_1: world.set_game_speed(0)      # Paused
-                if event.key == pygame.K_2: world.set_game_speed(60)     # 1 min/sec
-                if event.key == pygame.K_3: world.set_game_speed(3600)   # 1 hour/sec
-                if event.key == pygame.K_4: world.set_game_speed(86400)  # 1 day/sec
+                if event.key == pygame.K_0: world.set_game_speed(0)      # Paused
+                if event.key == pygame.K_1: world.set_game_speed(1)      # Real-Time (1x)
+                if event.key == pygame.K_2: world.set_game_speed(60)     # Normal (60x)
+                if event.key == pygame.K_3: world.set_game_speed(3600)   # Fast (3600x)
+                if event.key == pygame.K_4: world.set_game_speed(86400)  # Very Fast (86400x)
             if event.type == pygame.MOUSEWHEEL:
                 if event.y > 0: camera.zoom_in()
                 elif event.y < 0: camera.zoom_out()
